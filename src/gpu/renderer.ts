@@ -517,7 +517,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
       pass.draw(this.linkVertexCount);
     }
 
-    if (this.terminalVertexCount > 0) {
+    if (this.terminalVertexCount > 0 && this.distance <= 2.05) {
       pass.setPipeline(this.linkPipeline);
       pass.setBindGroup(0, this.cameraBindGroup);
       pass.setVertexBuffer(0, this.terminalBuffer);
@@ -628,7 +628,9 @@ export class WebGpuRenderer implements ConstellationRenderer {
     }
     const satCount = Math.floor(this.satPositionsNorm.length / 3);
     const linePerSat = 4;
-    const vertices = new Float32Array(satCount * linePerSat * 2 * 7);
+    const stride = 24;
+    const n = Math.ceil(satCount / stride);
+    const vertices = new Float32Array(n * linePerSat * 2 * 7);
     const arrowLen = 0.02;
     const colors = [
       [0.08, 0.2, 0.9],
@@ -638,7 +640,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
     ] as const;
 
     let out = 0;
-    for (let i = 0; i < satCount; i += 1) {
+    for (let i = 0; i < satCount; i += stride) {
       const p = i * 3;
       const vx = this.satVelNorm[p + 0];
       const vy = this.satVelNorm[p + 1];
@@ -691,7 +693,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
     this.ensureTerminalBuffer(vertices.byteLength);
     this.device.queue.writeBuffer(this.terminalBuffer, 0, vertices);
-    this.terminalVertexCount = satCount * linePerSat * 2;
+    this.terminalVertexCount = n * linePerSat * 2;
   }
 
   private createDepthTexture(): GPUTexture {

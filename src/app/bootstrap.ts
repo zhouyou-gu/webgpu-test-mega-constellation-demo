@@ -60,6 +60,33 @@ export async function startApp(): Promise<void> {
   let lastSatCount = 0;
   let lastConnectedSatPairs: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
   let lastConnectedLts: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
+  const switchToCpu = (reason: string): void => {
+    if (effectiveMode === 'cpu') {
+      return;
+    }
+    const newCanvas = document.createElement('canvas');
+    newCanvas.id = 'scene';
+    if (canvas) {
+      canvas.replaceWith(newCanvas);
+    }
+    canvas = newCanvas;
+    renderer = new CpuRenderer(canvas);
+    effectiveMode = 'cpu';
+    state.warning = reason;
+    if (lastPositions && lastVelocities && lastSatCount > 0) {
+      renderer.setSatelliteState(lastPositions, lastVelocities, lastSatCount);
+      renderer.setLinks(lastConnectedSatPairs, lastConnectedLts);
+    }
+  };
+  if (gpuRenderer) {
+    const device = gpuRenderer.getDevice();
+    device.addEventListener('uncapturederror', () => {
+      switchToCpu('WebGPU runtime error; switched to CPU fallback.');
+    });
+    void device.lost.then(() => {
+      switchToCpu('WebGPU device lost; switched to CPU fallback.');
+    });
+  }
 
   let tleText = '';
   try {
@@ -189,31 +216,6 @@ export async function startApp(): Promise<void> {
     requestAnimationFrame(frame);
   };
 
-  // Safety net: if WebGPU path produces black output, fall back to CPU renderer.
-  setTimeout(() => {
-    if (effectiveMode !== 'gpu') {
-      return;
-    }
-    if (!canvas) {
-      return;
-    }
-    const black = isCanvasMostlyBlack(canvas);
-    if (!black) {
-      return;
-    }
-    const newCanvas = document.createElement('canvas');
-    newCanvas.id = 'scene';
-    canvas.replaceWith(newCanvas);
-    canvas = newCanvas;
-    renderer = new CpuRenderer(canvas);
-    effectiveMode = 'cpu';
-    state.warning = 'WebGPU render output was invalid; switched to CPU fallback.';
-    if (lastPositions && lastVelocities && lastSatCount > 0) {
-      renderer.setSatelliteState(lastPositions, lastVelocities, lastSatCount);
-      renderer.setLinks(lastConnectedSatPairs, lastConnectedLts);
-    }
-  }, 5000);
-
   requestAnimationFrame(frame);
 }
 
@@ -230,25 +232,4 @@ function toOverlay(mode: RuntimeMode, state: RuntimeState): OverlayMetrics {
     tleUpdatedUtc: state.tleUpdatedUtc,
     warning: state.warning
   };
-}
-
-function isCanvasMostlyBlack(canvas: HTMLCanvasElement): boolean {
-  const probe = document.createElement('canvas');
-  probe.width = canvas.width;
-  probe.height = canvas.height;
-  const ctx = probe.getContext('2d');
-  if (!ctx || probe.width === 0 || probe.height === 0) {
-    return false;
-  }
-  ctx.drawImage(canvas, 0, 0);
-  const sample = ctx.getImageData(0, 0, probe.width, probe.height).data;
-  let lit = 0;
-  const step = 4 * 16;
-  for (let i = 0; i < sample.length; i += step) {
-    if (sample[i] > 8 || sample[i + 1] > 8 || sample[i + 2] > 8) {
-      lit += 1;
-    }
-  }
-  const samples = Math.max(1, Math.floor(sample.length / step));
-  return lit / samples < 0.02;
 }

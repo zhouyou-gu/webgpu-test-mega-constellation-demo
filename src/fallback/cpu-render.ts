@@ -133,13 +133,13 @@ export class CpuRenderer implements ConstellationRenderer {
     const ltColor = (idx: number): string => {
       switch (idx % 4) {
         case 0:
-          return 'rgba(20, 50, 220, 0.9)';
+          return 'rgba(20, 50, 220, 0.72)';
         case 1:
-          return 'rgba(30, 180, 40, 0.9)';
+          return 'rgba(30, 180, 40, 0.72)';
         case 2:
-          return 'rgba(235, 30, 30, 0.9)';
+          return 'rgba(235, 30, 30, 0.72)';
         default:
-          return 'rgba(180, 180, 0, 0.9)';
+          return 'rgba(180, 180, 0, 0.72)';
       }
     };
     for (let i = 0; i < pairCount; i += 1) {
@@ -170,7 +170,7 @@ export class CpuRenderer implements ConstellationRenderer {
       const bny = 1 - ((by / bw) * 0.5 + 0.5);
 
       this.ctx.strokeStyle = ltColor(this.linkLts[i * 2 + 0] ?? 0);
-      this.ctx.lineWidth = 1.4;
+      this.ctx.lineWidth = 1.0;
       this.ctx.beginPath();
       this.ctx.moveTo(anx * width, any * height);
       this.ctx.lineTo(bnx * width, bny * height);
@@ -199,7 +199,10 @@ export class CpuRenderer implements ConstellationRenderer {
       const sy = (1 - (ny * 0.5 + 0.5)) * height;
       this.ctx.fillRect(sx, sy, 1.5, 1.5);
 
-      // Draw four laser terminal directions (front/back/right/left) for zoomed visibility.
+      // Draw four laser terminal directions (front/back/right/left) in close zoom only.
+      if (this.distance > 2.05 || i % (this.distance < 1.7 ? 10 : 26) !== 0) {
+        continue;
+      }
       const vx = this.satVelNorm[p + 0];
       const vy = this.satVelNorm[p + 1];
       const vz = this.satVelNorm[p + 2];
@@ -230,7 +233,7 @@ export class CpuRenderer implements ConstellationRenderer {
         { v: [rx, ry, rz], color: 'rgba(230,30,30,0.95)' },
         { v: [lx, ly, lz], color: 'rgba(180,180,0,0.95)' }
       ] as const;
-      const arrowLen = 0.02;
+      const arrowLen = 0.03;
       for (const t of terminals) {
         const ex = this.satPositionsNorm[p + 0] + t.v[0] * arrowLen;
         const ey = this.satPositionsNorm[p + 1] + t.v[1] * arrowLen;
