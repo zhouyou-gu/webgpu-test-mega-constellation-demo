@@ -303,6 +303,131 @@ fn fsMain(input: VertexOut) -> @location(0) vec4<f32> {
   });
 }
 
+function createWideLinePipeline(
+  device: GPUDevice,
+  format: GPUTextureFormat,
+  layout: GPUBindGroupLayout
+): GPURenderPipeline {
+  const module = device.createShaderModule({
+    code: `
+struct Camera {
+  viewProj: mat4x4<f32>,
+};
+struct LineParams {
+  viewport: vec2<f32>,
+  widthPx: f32,
+  _pad0: f32,
+};
+
+@group(0) @binding(0)
+var<uniform> camera: Camera;
+@group(0) @binding(1)
+var<uniform> lineParams: LineParams;
+
+struct InstanceIn {
+  @location(0) aPos: vec3<f32>,
+  @location(1) bPos: vec3<f32>,
+  @location(2) color: vec4<f32>,
+};
+
+struct VertexOut {
+  @builtin(position) position: vec4<f32>,
+  @location(0) color: vec4<f32>,
+  @location(1) valid: f32,
+};
+
+fn segmentCorner(vid: u32) -> vec2<f32> {
+  if (vid == 0u) { return vec2<f32>(0.0, -1.0); }
+  if (vid == 1u) { return vec2<f32>(0.0,  1.0); }
+  if (vid == 2u) { return vec2<f32>(1.0,  1.0); }
+  if (vid == 3u) { return vec2<f32>(0.0, -1.0); }
+  if (vid == 4u) { return vec2<f32>(1.0,  1.0); }
+  return vec2<f32>(1.0, -1.0);
+}
+
+@vertex
+fn vsMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  input: InstanceIn
+) -> VertexOut {
+  var out: VertexOut;
+  let clipA = camera.viewProj * vec4<f32>(input.aPos, 1.0);
+  let clipB = camera.viewProj * vec4<f32>(input.bPos, 1.0);
+
+  if (clipA.w <= 0.0001 || clipB.w <= 0.0001) {
+    out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    out.color = input.color;
+    out.valid = 0.0;
+    return out;
+  }
+
+  let c = segmentCorner(vertexIndex);
+  let t = c.x;
+  let side = c.y;
+  let baseClip = mix(clipA, clipB, t);
+  let ndcA = clipA.xy / clipA.w;
+  let ndcB = clipB.xy / clipB.w;
+  var dir = ndcB - ndcA;
+  let len = length(dir);
+  if (len < 1e-6) {
+    dir = vec2<f32>(1.0, 0.0);
+  } else {
+    dir = dir / len;
+  }
+  let normal = vec2<f32>(-dir.y, dir.x);
+  let pxToNdc = vec2<f32>(2.0 / lineParams.viewport.x, 2.0 / lineParams.viewport.y);
+  let offsetNdc = normal * (lineParams.widthPx * 0.5) * pxToNdc * side;
+
+  out.position = vec4<f32>(baseClip.xy + offsetNdc * baseClip.w, baseClip.zw);
+  out.color = input.color;
+  out.valid = 1.0;
+  return out;
+}
+
+@fragment
+fn fsMain(input: VertexOut) -> @location(0) vec4<f32> {
+  if (input.valid < 0.5) {
+    discard;
+  }
+  return input.color;
+}
+`
+  });
+
+  return device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    vertex: {
+      module,
+      entryPoint: 'vsMain',
+      buffers: [
+        {
+          arrayStride: 10 * 4,
+          stepMode: 'instance',
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 3 * 4, format: 'float32x3' },
+            { shaderLocation: 2, offset: 6 * 4, format: 'float32x4' }
+          ]
+        }
+      ]
+    },
+    fragment: {
+      module,
+      entryPoint: 'fsMain',
+      targets: [{ format }]
+    },
+    primitive: {
+      topology: 'triangle-list',
+      cullMode: 'none'
+    },
+    depthStencil: {
+      depthWriteEnabled: false,
+      depthCompare: 'less',
+      format: 'depth24plus'
+    }
+  });
+}
+
 async function loadEarthBitmap(): Promise<ImageBitmap | null> {
   try {
     const res = await fetch('./population_density_texture.png', { cache: 'force-cache' });
@@ -327,13 +452,16 @@ export class WebGpuRenderer implements ConstellationRenderer {
   private readonly cameraBuffer: GPUBuffer;
   private readonly sphereParamBuffer: GPUBuffer;
   private readonly satelliteParamBuffer: GPUBuffer;
+  private readonly lineParamBuffer: GPUBuffer;
   private readonly cameraBindGroup: GPUBindGroup;
   private readonly sphereBindGroup: GPUBindGroup;
   private readonly satelliteBindGroup: GPUBindGroup;
+  private readonly lineBindGroup: GPUBindGroup;
 
   private readonly spherePipeline: GPURenderPipeline;
   private readonly satellitePipeline: GPURenderPipeline;
-  private readonly linkPipeline: GPURenderPipeline;
+  private readonly axisPipeline: GPURenderPipeline;
+  private readonly wideLinePipeline: GPURenderPipeline;
 
   private readonly sphereBuffer: GPUBuffer;
   private sphereVertexCount = 0;
@@ -347,11 +475,11 @@ export class WebGpuRenderer implements ConstellationRenderer {
   private satelliteVertexCount = 0;
 
   private linkBuffer: GPUBuffer;
-  private linkBufferSize = 7 * 4;
-  private linkVertexCount = 0;
+  private linkBufferSize = 10 * 4;
+  private linkSegmentCount = 0;
   private terminalBuffer: GPUBuffer;
-  private terminalBufferSize = 7 * 4;
-  private terminalVertexCount = 0;
+  private terminalBufferSize = 10 * 4;
+  private terminalSegmentCount = 0;
 
   private depthTexture: GPUTexture;
 
@@ -396,6 +524,10 @@ export class WebGpuRenderer implements ConstellationRenderer {
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
+    this.lineParamBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
 
     const uniformLayout = device.createBindGroupLayout({
       entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }]
@@ -409,6 +541,12 @@ export class WebGpuRenderer implements ConstellationRenderer {
       ]
     });
     const satelliteLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
+      ]
+    });
+    const lineLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
@@ -464,10 +602,18 @@ export class WebGpuRenderer implements ConstellationRenderer {
         { binding: 1, resource: { buffer: this.satelliteParamBuffer } }
       ]
     });
+    this.lineBindGroup = device.createBindGroup({
+      layout: lineLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraBuffer } },
+        { binding: 1, resource: { buffer: this.lineParamBuffer } }
+      ]
+    });
 
     this.spherePipeline = createSpherePipeline(device, format, sphereLayout);
     this.satellitePipeline = createSatellitePipeline(device, format, satelliteLayout);
-    this.linkPipeline = createGeometryPipeline(device, format, 'line-list', uniformLayout);
+    this.axisPipeline = createGeometryPipeline(device, format, 'line-list', uniformLayout);
+    this.wideLinePipeline = createWideLinePipeline(device, format, lineLayout);
 
     const sphereVertices = createSphereVertices();
     this.sphereVertexCount = sphereVertices.length / 7;
@@ -632,23 +778,35 @@ export class WebGpuRenderer implements ConstellationRenderer {
     pass.setVertexBuffer(0, this.sphereBuffer);
     pass.draw(this.sphereVertexCount);
 
-    pass.setPipeline(this.linkPipeline);
+    pass.setPipeline(this.axisPipeline);
     pass.setBindGroup(0, this.cameraBindGroup);
     pass.setVertexBuffer(0, this.axisBuffer);
     pass.draw(this.axisVertexCount);
 
-    if (this.linkVertexCount > 0) {
-      pass.setPipeline(this.linkPipeline);
-      pass.setBindGroup(0, this.cameraBindGroup);
+    const { linkWidthPx, terminalWidthPx } = this.computeLinePixelWidths();
+
+    if (this.linkSegmentCount > 0) {
+      this.device.queue.writeBuffer(
+        this.lineParamBuffer,
+        0,
+        new Float32Array([this.canvas.width, this.canvas.height, linkWidthPx, 0])
+      );
+      pass.setPipeline(this.wideLinePipeline);
+      pass.setBindGroup(0, this.lineBindGroup);
       pass.setVertexBuffer(0, this.linkBuffer);
-      pass.draw(this.linkVertexCount);
+      pass.draw(6, this.linkSegmentCount);
     }
 
-    if (this.terminalVertexCount > 0 && this.distance <= 2.35) {
-      pass.setPipeline(this.linkPipeline);
-      pass.setBindGroup(0, this.cameraBindGroup);
+    if (this.terminalSegmentCount > 0 && this.distance <= 2.45) {
+      this.device.queue.writeBuffer(
+        this.lineParamBuffer,
+        0,
+        new Float32Array([this.canvas.width, this.canvas.height, terminalWidthPx, 0])
+      );
+      pass.setPipeline(this.wideLinePipeline);
+      pass.setBindGroup(0, this.lineBindGroup);
       pass.setVertexBuffer(0, this.terminalBuffer);
-      pass.draw(this.terminalVertexCount);
+      pass.draw(6, this.terminalSegmentCount);
     }
 
     if (this.satelliteVertexCount > 0) {
@@ -702,62 +860,80 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
   private rebuildLinkBuffer(): void {
     if (this.satPositionsNorm.length === 0 || this.linkSatPairs.length === 0) {
-      this.linkVertexCount = 0;
+      this.linkSegmentCount = 0;
       return;
     }
 
     const pairCount = Math.floor(this.linkSatPairs.length / 2);
-    const vertices = new Float32Array(pairCount * 2 * 7);
+    const segments = pairCount * 2;
+    const vertices = new Float32Array(segments * 10);
+
+    const ltColor = (idx: number): readonly [number, number, number] =>
+      idx === 0
+        ? [0.08, 0.2, 0.9]
+        : idx === 1
+          ? [0.1, 0.75, 0.1]
+          : idx === 2
+            ? [0.92, 0.08, 0.08]
+            : [0.72, 0.72, 0.0];
 
     for (let i = 0; i < pairCount; i += 1) {
       const a = this.linkSatPairs[i * 2 + 0];
       const b = this.linkSatPairs[i * 2 + 1];
       const ap = a * 3;
       const bp = b * 3;
-      const o0 = i * 14;
-      const o1 = o0 + 7;
-      const ltIdx = (this.linkLts[i * 2 + 0] ?? 0) % 4;
-      const color =
-        ltIdx === 0
-          ? [0.08, 0.2, 0.9]
-          : ltIdx === 1
-            ? [0.1, 0.75, 0.1]
-            : ltIdx === 2
-              ? [0.92, 0.08, 0.08]
-              : [0.72, 0.72, 0.0];
+      const ax = this.satPositionsNorm[ap + 0];
+      const ay = this.satPositionsNorm[ap + 1];
+      const az = this.satPositionsNorm[ap + 2];
+      const bx = this.satPositionsNorm[bp + 0];
+      const by = this.satPositionsNorm[bp + 1];
+      const bz = this.satPositionsNorm[bp + 2];
+      const mx = (ax + bx) * 0.5;
+      const my = (ay + by) * 0.5;
+      const mz = (az + bz) * 0.5;
+      const c0 = ltColor((this.linkLts[i * 2 + 0] ?? 0) % 4);
+      const c1 = ltColor((this.linkLts[i * 2 + 1] ?? 0) % 4);
+      const o0 = i * 20;
+      const o1 = o0 + 10;
 
-      vertices[o0 + 0] = this.satPositionsNorm[ap + 0];
-      vertices[o0 + 1] = this.satPositionsNorm[ap + 1];
-      vertices[o0 + 2] = this.satPositionsNorm[ap + 2];
-      vertices[o0 + 3] = color[0];
-      vertices[o0 + 4] = color[1];
-      vertices[o0 + 5] = color[2];
-      vertices[o0 + 6] = 1;
+      vertices[o0 + 0] = ax;
+      vertices[o0 + 1] = ay;
+      vertices[o0 + 2] = az;
+      vertices[o0 + 3] = mx;
+      vertices[o0 + 4] = my;
+      vertices[o0 + 5] = mz;
+      vertices[o0 + 6] = c0[0];
+      vertices[o0 + 7] = c0[1];
+      vertices[o0 + 8] = c0[2];
+      vertices[o0 + 9] = 0.88;
 
-      vertices[o1 + 0] = this.satPositionsNorm[bp + 0];
-      vertices[o1 + 1] = this.satPositionsNorm[bp + 1];
-      vertices[o1 + 2] = this.satPositionsNorm[bp + 2];
-      vertices[o1 + 3] = color[0];
-      vertices[o1 + 4] = color[1];
-      vertices[o1 + 5] = color[2];
-      vertices[o1 + 6] = 1;
+      vertices[o1 + 0] = mx;
+      vertices[o1 + 1] = my;
+      vertices[o1 + 2] = mz;
+      vertices[o1 + 3] = bx;
+      vertices[o1 + 4] = by;
+      vertices[o1 + 5] = bz;
+      vertices[o1 + 6] = c1[0];
+      vertices[o1 + 7] = c1[1];
+      vertices[o1 + 8] = c1[2];
+      vertices[o1 + 9] = 0.88;
     }
 
     this.ensureLinkBuffer(vertices.byteLength);
     this.device.queue.writeBuffer(this.linkBuffer, 0, vertices);
-    this.linkVertexCount = pairCount * 2;
+    this.linkSegmentCount = segments;
   }
 
   private rebuildTerminalBuffer(): void {
     if (this.satPositionsNorm.length === 0 || this.satVelNorm.length === 0) {
-      this.terminalVertexCount = 0;
+      this.terminalSegmentCount = 0;
       return;
     }
     const satCount = Math.floor(this.satPositionsNorm.length / 3);
     const linePerSat = 4;
     const stride = 1;
     const n = Math.ceil(satCount / stride);
-    const vertices = new Float32Array(n * linePerSat * 2 * 7);
+    const vertices = new Float32Array(n * linePerSat * 10);
     const arrowLen = 0.012;
     const colors = [
       [0.08, 0.2, 0.9],
@@ -804,23 +980,19 @@ export class WebGpuRenderer implements ConstellationRenderer {
         vertices[out++] = px;
         vertices[out++] = py;
         vertices[out++] = pz;
-        vertices[out++] = c[0];
-        vertices[out++] = c[1];
-        vertices[out++] = c[2];
-        vertices[out++] = 1;
         vertices[out++] = px + dirs[d][0] * arrowLen;
         vertices[out++] = py + dirs[d][1] * arrowLen;
         vertices[out++] = pz + dirs[d][2] * arrowLen;
         vertices[out++] = c[0];
         vertices[out++] = c[1];
         vertices[out++] = c[2];
-        vertices[out++] = 1;
+        vertices[out++] = 0.95;
       }
     }
 
     this.ensureTerminalBuffer(vertices.byteLength);
     this.device.queue.writeBuffer(this.terminalBuffer, 0, vertices);
-    this.terminalVertexCount = n * linePerSat * 2;
+    this.terminalSegmentCount = n * linePerSat;
   }
 
   private createDepthTexture(): GPUTexture {
@@ -948,7 +1120,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
   }
 
   private clampDistance(next: number): number {
-    return Math.max(1.15, Math.min(6.0, next));
+    return Math.max(1.32, Math.min(6.0, next));
   }
 
   private getActivePinchDistance(): number {
@@ -962,5 +1134,12 @@ export class WebGpuRenderer implements ConstellationRenderer {
       return 0;
     }
     return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  private computeLinePixelWidths(): { linkWidthPx: number; terminalWidthPx: number } {
+    const zoomT = Math.max(0, Math.min(1, (2.7 - this.distance) / 1.38));
+    const linkWidthPx = 0.9 + 1.7 * zoomT;
+    const terminalWidthPx = linkWidthPx * 1.95;
+    return { linkWidthPx, terminalWidthPx };
   }
 }

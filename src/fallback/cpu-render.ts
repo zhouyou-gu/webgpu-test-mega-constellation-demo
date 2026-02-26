@@ -133,6 +133,10 @@ export class CpuRenderer implements ConstellationRenderer {
     this.ctx.lineWidth = 1;
     this.ctx.stroke();
 
+    const zoomT = Math.max(0, Math.min(1, (2.7 - this.distance) / 1.38));
+    const linkWidth = 0.9 + 1.7 * zoomT;
+    const terminalWidth = linkWidth * 1.95;
+
     const pairCount = Math.floor(this.links.length / 2);
     const ltColor = (idx: number): string => {
       switch (idx % 4) {
@@ -151,20 +155,20 @@ export class CpuRenderer implements ConstellationRenderer {
       const b = this.links[i * 2 + 1];
       const ap = a * 3;
       const bp = b * 3;
+      const axw = this.satPositionsNorm[ap + 0];
+      const ayw = this.satPositionsNorm[ap + 1];
+      const azw = this.satPositionsNorm[ap + 2];
+      const bxw = this.satPositionsNorm[bp + 0];
+      const byw = this.satPositionsNorm[bp + 1];
+      const bzw = this.satPositionsNorm[bp + 2];
+      const mxw = (axw + bxw) * 0.5;
+      const myw = (ayw + byw) * 0.5;
+      const mzw = (azw + bzw) * 0.5;
 
-      const [ax, ay, , aw] = transformToClip(
-        viewProj,
-        this.satPositionsNorm[ap + 0],
-        this.satPositionsNorm[ap + 1],
-        this.satPositionsNorm[ap + 2]
-      );
-      const [bx, by, , bw] = transformToClip(
-        viewProj,
-        this.satPositionsNorm[bp + 0],
-        this.satPositionsNorm[bp + 1],
-        this.satPositionsNorm[bp + 2]
-      );
-      if (aw <= 0 || bw <= 0) {
+      const [ax, ay, , aw] = transformToClip(viewProj, axw, ayw, azw);
+      const [bx, by, , bw] = transformToClip(viewProj, bxw, byw, bzw);
+      const [mx, my, , mw] = transformToClip(viewProj, mxw, myw, mzw);
+      if (aw <= 0 || bw <= 0 || mw <= 0) {
         continue;
       }
 
@@ -172,11 +176,22 @@ export class CpuRenderer implements ConstellationRenderer {
       const any = 1 - ((ay / aw) * 0.5 + 0.5);
       const bnx = (bx / bw) * 0.5 + 0.5;
       const bny = 1 - ((by / bw) * 0.5 + 0.5);
+      const mnx = (mx / mw) * 0.5 + 0.5;
+      const mny = 1 - ((my / mw) * 0.5 + 0.5);
+      const cFrom = ltColor(this.linkLts[i * 2 + 0] ?? 0);
+      const cTo = ltColor(this.linkLts[i * 2 + 1] ?? 0);
 
-      this.ctx.strokeStyle = ltColor(this.linkLts[i * 2 + 0] ?? 0);
-      this.ctx.lineWidth = 1.0;
+      this.ctx.strokeStyle = cFrom;
+      this.ctx.lineWidth = linkWidth;
       this.ctx.beginPath();
       this.ctx.moveTo(anx * width, any * height);
+      this.ctx.lineTo(mnx * width, mny * height);
+      this.ctx.stroke();
+
+      this.ctx.strokeStyle = cTo;
+      this.ctx.lineWidth = linkWidth;
+      this.ctx.beginPath();
+      this.ctx.moveTo(mnx * width, mny * height);
       this.ctx.lineTo(bnx * width, bny * height);
       this.ctx.stroke();
     }
@@ -204,7 +219,7 @@ export class CpuRenderer implements ConstellationRenderer {
       this.ctx.fillRect(sx, sy, 1.5, 1.5);
 
       // Draw four laser terminal directions (front/back/right/left) in close zoom only.
-      if (this.distance > 2.05 || i % (this.distance < 1.7 ? 10 : 26) !== 0) {
+      if (this.distance > 2.45 || i % (this.distance < 1.8 ? 8 : 24) !== 0) {
         continue;
       }
       const vx = this.satVelNorm[p + 0];
@@ -247,7 +262,7 @@ export class CpuRenderer implements ConstellationRenderer {
           continue;
         }
         this.ctx.strokeStyle = t.color;
-        this.ctx.lineWidth = 1.0;
+        this.ctx.lineWidth = terminalWidth;
         this.ctx.beginPath();
         this.ctx.moveTo(sx, sy);
         this.ctx.lineTo((tx / tw * 0.5 + 0.5) * width, (1 - (ty / tw * 0.5 + 0.5)) * height);
@@ -362,7 +377,7 @@ export class CpuRenderer implements ConstellationRenderer {
   }
 
   private clampDistance(next: number): number {
-    return Math.max(1.15, Math.min(6.0, next));
+    return Math.max(1.32, Math.min(6.0, next));
   }
 
   private getActivePinchDistance(): number {
