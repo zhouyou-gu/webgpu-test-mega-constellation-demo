@@ -80,10 +80,11 @@ export class CpuRenderer implements ConstellationRenderer {
     const proj = mat4Perspective((45 * Math.PI) / 180, aspect, 0.1, 100);
 
     const earthSpin = simTimeSec * ((2 * Math.PI) / 86164);
+    // Keep the world frame right-handed with Z-up to match source model space.
     const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw);
-    const eyeY = this.distance * Math.sin(this.pitch);
-    const eyeZ = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw);
-    const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 1, 0]);
+    const eyeY = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw);
+    const eyeZ = this.distance * Math.sin(this.pitch);
+    const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 0, 1]);
     const viewProj = mat4Multiply(proj, view);
 
     // Space frame axes (X red, Y green, Z blue).

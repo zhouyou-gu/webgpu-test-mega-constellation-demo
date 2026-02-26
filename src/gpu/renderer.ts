@@ -593,11 +593,12 @@ export class WebGpuRenderer implements ConstellationRenderer {
     const aspect = this.canvas.width / Math.max(1, this.canvas.height);
     const proj = mat4Perspective((45 * Math.PI) / 180, aspect, 0.1, 100);
 
+    // Keep the world frame right-handed with Z-up to match source model space.
     const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw);
-    const eyeY = this.distance * Math.sin(this.pitch);
-    const eyeZ = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw);
+    const eyeY = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw);
+    const eyeZ = this.distance * Math.sin(this.pitch);
 
-    const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 1, 0]);
+    const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 0, 1]);
     const viewProj = mat4Multiply(proj, view);
     this.device.queue.writeBuffer(this.cameraBuffer, 0, viewProj as BufferSource);
     this.device.queue.writeBuffer(
