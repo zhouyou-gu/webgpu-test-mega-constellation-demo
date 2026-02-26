@@ -36,6 +36,17 @@ function createSphereVertices(rows = 24, cols = 48): Float32Array {
   return new Float32Array(vertices);
 }
 
+function createAxisVertices(length = 1.6): Float32Array {
+  return new Float32Array([
+    0, 0, 0, 0.85, 0.12, 0.12, 1,
+    length, 0, 0, 0.85, 0.12, 0.12, 1,
+    0, 0, 0, 0.12, 0.75, 0.12, 1,
+    0, length, 0, 0.12, 0.75, 0.12, 1,
+    0, 0, 0, 0.12, 0.12, 0.85, 1,
+    0, 0, length, 0.12, 0.12, 0.85, 1
+  ]);
+}
+
 function createGeometryPipeline(
   device: GPUDevice,
   format: GPUTextureFormat,
@@ -46,6 +57,12 @@ function createGeometryPipeline(
     code: `
 struct Camera {
   viewProj: mat4x4<f32>,
+};
+struct Params {
+  earthOffset: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 @group(0) @binding(0)
@@ -125,6 +142,8 @@ var<uniform> camera: Camera;
 var earthSampler: sampler;
 @group(0) @binding(2)
 var earthTexture: texture_2d<f32>;
+@group(0) @binding(3)
+var<uniform> params: Params;
 
 struct VertexIn {
   @location(0) position: vec3<f32>,
@@ -147,7 +166,7 @@ fn vsMain(input: VertexIn) -> VertexOut {
 @fragment
 fn fsMain(input: VertexOut) -> @location(0) vec4<f32> {
   let n = normalize(input.worldPos);
-  var u = atan2(n.y, n.x) / (2.0 * 3.141592653589793) + 0.5;
+  var u = atan2(n.y, n.x) / (2.0 * 3.141592653589793) + 0.5 + params.earthOffset;
   let v = acos(clamp(n.z, -1.0, 1.0)) / 3.141592653589793;
   let tex = textureSample(earthTexture, earthSampler, vec2<f32>(u, v));
   return vec4<f32>(tex.rgb, 1.0);
@@ -209,6 +228,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
   private readonly format: GPUTextureFormat;
 
   private readonly cameraBuffer: GPUBuffer;
+  private readonly sphereParamBuffer: GPUBuffer;
   private readonly cameraBindGroup: GPUBindGroup;
   private readonly sphereBindGroup: GPUBindGroup;
 
@@ -218,6 +238,8 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
   private readonly sphereBuffer: GPUBuffer;
   private sphereVertexCount = 0;
+  private readonly axisBuffer: GPUBuffer;
+  private axisVertexCount = 0;
   private readonly earthTexture: GPUTexture;
   private readonly earthSampler: GPUSampler;
 
@@ -228,10 +250,14 @@ export class WebGpuRenderer implements ConstellationRenderer {
   private linkBuffer: GPUBuffer;
   private linkBufferSize = 7 * 4;
   private linkVertexCount = 0;
+  private terminalBuffer: GPUBuffer;
+  private terminalBufferSize = 7 * 4;
+  private terminalVertexCount = 0;
 
   private depthTexture: GPUTexture;
 
   private satPositionsNorm: Float32Array<ArrayBufferLike> = new Float32Array();
+  private satVelNorm: Float32Array<ArrayBufferLike> = new Float32Array();
   private linkSatPairs: Uint32Array<ArrayBufferLike> = new Uint32Array();
   private linkLts: Uint32Array<ArrayBufferLike> = new Uint32Array();
 
@@ -258,6 +284,10 @@ export class WebGpuRenderer implements ConstellationRenderer {
       size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
+    this.sphereParamBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
 
     const uniformLayout = device.createBindGroupLayout({
       entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }]
@@ -266,7 +296,8 @@ export class WebGpuRenderer implements ConstellationRenderer {
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
       ]
     });
 
@@ -308,7 +339,8 @@ export class WebGpuRenderer implements ConstellationRenderer {
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
         { binding: 1, resource: this.earthSampler },
-        { binding: 2, resource: this.earthTexture.createView() }
+        { binding: 2, resource: this.earthTexture.createView() },
+        { binding: 3, resource: { buffer: this.sphereParamBuffer } }
       ]
     });
 
@@ -323,6 +355,13 @@ export class WebGpuRenderer implements ConstellationRenderer {
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
     });
     device.queue.writeBuffer(this.sphereBuffer, 0, sphereVertices as unknown as GPUAllowSharedBufferSource);
+    const axisVertices = createAxisVertices();
+    this.axisVertexCount = axisVertices.length / 7;
+    this.axisBuffer = device.createBuffer({
+      size: axisVertices.byteLength,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+    });
+    device.queue.writeBuffer(this.axisBuffer, 0, axisVertices as unknown as GPUAllowSharedBufferSource);
 
     this.satelliteBuffer = device.createBuffer({
       size: this.satelliteBufferSize,
@@ -330,6 +369,10 @@ export class WebGpuRenderer implements ConstellationRenderer {
     });
     this.linkBuffer = device.createBuffer({
       size: this.linkBufferSize,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+    });
+    this.terminalBuffer = device.createBuffer({
+      size: this.terminalBufferSize,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
     });
 
@@ -371,8 +414,13 @@ export class WebGpuRenderer implements ConstellationRenderer {
     return this.device;
   }
 
-  setSatelliteState(positionsKm: Float32Array<ArrayBufferLike>, satCount: number): void {
+  setSatelliteState(
+    positionsKm: Float32Array<ArrayBufferLike>,
+    velocitiesKmps: Float32Array<ArrayBufferLike>,
+    satCount: number
+  ): void {
     this.satPositionsNorm = new Float32Array(satCount * 3);
+    this.satVelNorm = new Float32Array(satCount * 3);
 
     const vertexData = new Float32Array(satCount * 7);
     for (let i = 0; i < satCount; i += 1) {
@@ -385,6 +433,9 @@ export class WebGpuRenderer implements ConstellationRenderer {
       this.satPositionsNorm[src + 0] = x;
       this.satPositionsNorm[src + 1] = y;
       this.satPositionsNorm[src + 2] = z;
+      this.satVelNorm[src + 0] = velocitiesKmps[src + 0] / EARTH_RADIUS_KM;
+      this.satVelNorm[src + 1] = velocitiesKmps[src + 1] / EARTH_RADIUS_KM;
+      this.satVelNorm[src + 2] = velocitiesKmps[src + 2] / EARTH_RADIUS_KM;
 
       vertexData[dst + 0] = x;
       vertexData[dst + 1] = y;
@@ -398,6 +449,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
     this.ensureSatelliteBuffer(vertexData.byteLength);
     this.device.queue.writeBuffer(this.satelliteBuffer, 0, vertexData);
     this.satelliteVertexCount = satCount;
+    this.rebuildTerminalBuffer();
 
     if (this.linkSatPairs.length > 0) {
       this.rebuildLinkBuffer();
@@ -427,6 +479,8 @@ export class WebGpuRenderer implements ConstellationRenderer {
     const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 1, 0]);
     const viewProj = mat4Multiply(proj, view);
     this.device.queue.writeBuffer(this.cameraBuffer, 0, viewProj as BufferSource);
+    const earthOffset = (simTimeSec * (1 / 86164)) % 1;
+    this.device.queue.writeBuffer(this.sphereParamBuffer, 0, new Float32Array([earthOffset, 0, 0, 0]));
 
     const encoder = this.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
@@ -451,11 +505,23 @@ export class WebGpuRenderer implements ConstellationRenderer {
     pass.setVertexBuffer(0, this.sphereBuffer);
     pass.draw(this.sphereVertexCount);
 
+    pass.setPipeline(this.linkPipeline);
+    pass.setBindGroup(0, this.cameraBindGroup);
+    pass.setVertexBuffer(0, this.axisBuffer);
+    pass.draw(this.axisVertexCount);
+
     if (this.linkVertexCount > 0) {
       pass.setPipeline(this.linkPipeline);
       pass.setBindGroup(0, this.cameraBindGroup);
       pass.setVertexBuffer(0, this.linkBuffer);
       pass.draw(this.linkVertexCount);
+    }
+
+    if (this.terminalVertexCount > 0) {
+      pass.setPipeline(this.linkPipeline);
+      pass.setBindGroup(0, this.cameraBindGroup);
+      pass.setVertexBuffer(0, this.terminalBuffer);
+      pass.draw(this.terminalVertexCount);
     }
 
     if (this.satelliteVertexCount > 0) {
@@ -491,6 +557,18 @@ export class WebGpuRenderer implements ConstellationRenderer {
     this.linkBufferSize = bytes;
     this.linkBuffer = this.device.createBuffer({
       size: this.linkBufferSize,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+    });
+  }
+
+  private ensureTerminalBuffer(bytes: number): void {
+    if (bytes <= this.terminalBufferSize) {
+      return;
+    }
+    this.terminalBuffer.destroy();
+    this.terminalBufferSize = bytes;
+    this.terminalBuffer = this.device.createBuffer({
+      size: this.terminalBufferSize,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
     });
   }
@@ -541,6 +619,79 @@ export class WebGpuRenderer implements ConstellationRenderer {
     this.ensureLinkBuffer(vertices.byteLength);
     this.device.queue.writeBuffer(this.linkBuffer, 0, vertices);
     this.linkVertexCount = pairCount * 2;
+  }
+
+  private rebuildTerminalBuffer(): void {
+    if (this.satPositionsNorm.length === 0 || this.satVelNorm.length === 0) {
+      this.terminalVertexCount = 0;
+      return;
+    }
+    const satCount = Math.floor(this.satPositionsNorm.length / 3);
+    const linePerSat = 4;
+    const vertices = new Float32Array(satCount * linePerSat * 2 * 7);
+    const arrowLen = 0.02;
+    const colors = [
+      [0.08, 0.2, 0.9],
+      [0.1, 0.75, 0.1],
+      [0.92, 0.08, 0.08],
+      [0.72, 0.72, 0.0]
+    ] as const;
+
+    let out = 0;
+    for (let i = 0; i < satCount; i += 1) {
+      const p = i * 3;
+      const vx = this.satVelNorm[p + 0];
+      const vy = this.satVelNorm[p + 1];
+      const vz = this.satVelNorm[p + 2];
+      const vn = Math.hypot(vx, vy, vz) || 1;
+      const fx = vx / vn;
+      const fy = vy / vn;
+      const fz = vz / vn;
+      const bx = -fx;
+      const by = -fy;
+      const bz = -fz;
+      const px = this.satPositionsNorm[p + 0];
+      const py = this.satPositionsNorm[p + 1];
+      const pz = this.satPositionsNorm[p + 2];
+      const pn = Math.hypot(px, py, pz) || 1;
+      const dx = px / pn;
+      const dy = py / pn;
+      const dz = pz / pn;
+      const rx = dy * fz - dz * fy;
+      const ry = dz * fx - dx * fz;
+      const rz = dx * fy - dy * fx;
+      const lx = -rx;
+      const ly = -ry;
+      const lz = -rz;
+      const dirs = [
+        [fx, fy, fz],
+        [bx, by, bz],
+        [rx, ry, rz],
+        [lx, ly, lz]
+      ] as const;
+
+      for (let d = 0; d < 4; d += 1) {
+        const c = colors[d];
+        vertices[out++] = px;
+        vertices[out++] = py;
+        vertices[out++] = pz;
+        vertices[out++] = c[0];
+        vertices[out++] = c[1];
+        vertices[out++] = c[2];
+        vertices[out++] = 1;
+        vertices[out++] = px + dirs[d][0] * arrowLen;
+        vertices[out++] = py + dirs[d][1] * arrowLen;
+        vertices[out++] = pz + dirs[d][2] * arrowLen;
+        vertices[out++] = c[0];
+        vertices[out++] = c[1];
+        vertices[out++] = c[2];
+        vertices[out++] = 1;
+      }
+    }
+
+    this.ensureTerminalBuffer(vertices.byteLength);
+    this.device.queue.writeBuffer(this.terminalBuffer, 0, vertices);
+    this.terminalVertexCount = satCount * linePerSat * 2;
   }
 
   private createDepthTexture(): GPUTexture {

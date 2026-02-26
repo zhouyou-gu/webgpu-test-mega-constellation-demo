@@ -95,7 +95,7 @@ export async function startApp(): Promise<void> {
       state.simTimeSec = msg.simTimeSec;
       state.propagationMs = msg.propagationMs;
 
-      renderer.setSatelliteState(msg.positions, msg.satCount);
+      renderer.setSatelliteState(msg.positions, msg.velocities, msg.satCount);
 
       const posCopy = new Float32Array(msg.positions);
       const velCopy = new Float32Array(msg.velocities);

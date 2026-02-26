@@ -9,6 +9,7 @@ export class CpuRenderer implements ConstellationRenderer {
   private readonly ctx: CanvasRenderingContext2D;
 
   private satPositionsNorm: Float32Array<ArrayBufferLike> = new Float32Array();
+  private satVelNorm: Float32Array<ArrayBufferLike> = new Float32Array();
   private satCount = 0;
   private links: Uint32Array<ArrayBufferLike> = new Uint32Array();
   private linkLts: Uint32Array<ArrayBufferLike> = new Uint32Array();
@@ -38,12 +39,18 @@ export class CpuRenderer implements ConstellationRenderer {
     this.resize();
   }
 
-  setSatelliteState(positionsKm: Float32Array<ArrayBufferLike>, satCount: number): void {
+  setSatelliteState(
+    positionsKm: Float32Array<ArrayBufferLike>,
+    velocitiesKmps: Float32Array<ArrayBufferLike>,
+    satCount: number
+  ): void {
     this.satCount = satCount;
     this.satPositionsNorm = new Float32Array(satCount * 3);
+    this.satVelNorm = new Float32Array(satCount * 3);
 
     for (let i = 0; i < satCount * 3; i += 1) {
       this.satPositionsNorm[i] = positionsKm[i] / EARTH_RADIUS_KM;
+      this.satVelNorm[i] = velocitiesKmps[i] / EARTH_RADIUS_KM;
     }
   }
 
@@ -69,12 +76,32 @@ export class CpuRenderer implements ConstellationRenderer {
     const aspect = width / Math.max(1, height);
     const proj = mat4Perspective((45 * Math.PI) / 180, aspect, 0.1, 100);
 
-    const earthSpin = simTimeSec * 0.0005;
+    const earthSpin = simTimeSec * ((2 * Math.PI) / 86164);
     const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw);
     const eyeY = this.distance * Math.sin(this.pitch);
     const eyeZ = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw);
     const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 1, 0]);
     const viewProj = mat4Multiply(proj, view);
+
+    // Space frame axes (X red, Y green, Z blue).
+    const axis = [
+      { from: [0, 0, 0], to: [1.6, 0, 0], color: 'rgba(220,40,40,0.9)' },
+      { from: [0, 0, 0], to: [0, 1.6, 0], color: 'rgba(40,170,40,0.9)' },
+      { from: [0, 0, 0], to: [0, 0, 1.6], color: 'rgba(40,40,220,0.9)' }
+    ] as const;
+    for (const a of axis) {
+      const [ax, ay, , aw] = transformToClip(viewProj, a.from[0], a.from[1], a.from[2]);
+      const [bx, by, , bw] = transformToClip(viewProj, a.to[0], a.to[1], a.to[2]);
+      if (aw <= 0 || bw <= 0) {
+        continue;
+      }
+      this.ctx.strokeStyle = a.color;
+      this.ctx.lineWidth = 1.5;
+      this.ctx.beginPath();
+      this.ctx.moveTo((ax / aw * 0.5 + 0.5) * width, (1 - (ay / aw * 0.5 + 0.5)) * height);
+      this.ctx.lineTo((bx / bw * 0.5 + 0.5) * width, (1 - (by / bw * 0.5 + 0.5)) * height);
+      this.ctx.stroke();
+    }
 
     const earthR = Math.min(width, height) * 0.3;
     const earthX = width * 0.5;
@@ -171,6 +198,54 @@ export class CpuRenderer implements ConstellationRenderer {
       const sx = (nx * 0.5 + 0.5) * width;
       const sy = (1 - (ny * 0.5 + 0.5)) * height;
       this.ctx.fillRect(sx, sy, 1.5, 1.5);
+
+      // Draw four laser terminal directions (front/back/right/left) for zoomed visibility.
+      const vx = this.satVelNorm[p + 0];
+      const vy = this.satVelNorm[p + 1];
+      const vz = this.satVelNorm[p + 2];
+      const vNorm = Math.hypot(vx, vy, vz) || 1;
+      const fx = vx / vNorm;
+      const fy = vy / vNorm;
+      const fz = vz / vNorm;
+      const bxv = -fx;
+      const byv = -fy;
+      const bzv = -fz;
+      const px = this.satPositionsNorm[p + 0];
+      const py = this.satPositionsNorm[p + 1];
+      const pz = this.satPositionsNorm[p + 2];
+      const pNorm = Math.hypot(px, py, pz) || 1;
+      const dx = px / pNorm;
+      const dy = py / pNorm;
+      const dz = pz / pNorm;
+      const rx = dy * fz - dz * fy;
+      const ry = dz * fx - dx * fz;
+      const rz = dx * fy - dy * fx;
+      const lx = -rx;
+      const ly = -ry;
+      const lz = -rz;
+
+      const terminals = [
+        { v: [fx, fy, fz], color: 'rgba(20,50,220,0.95)' },
+        { v: [bxv, byv, bzv], color: 'rgba(20,180,40,0.95)' },
+        { v: [rx, ry, rz], color: 'rgba(230,30,30,0.95)' },
+        { v: [lx, ly, lz], color: 'rgba(180,180,0,0.95)' }
+      ] as const;
+      const arrowLen = 0.02;
+      for (const t of terminals) {
+        const ex = this.satPositionsNorm[p + 0] + t.v[0] * arrowLen;
+        const ey = this.satPositionsNorm[p + 1] + t.v[1] * arrowLen;
+        const ez = this.satPositionsNorm[p + 2] + t.v[2] * arrowLen;
+        const [tx, ty, , tw] = transformToClip(viewProj, ex, ey, ez);
+        if (tw <= 0) {
+          continue;
+        }
+        this.ctx.strokeStyle = t.color;
+        this.ctx.lineWidth = 1.0;
+        this.ctx.beginPath();
+        this.ctx.moveTo(sx, sy);
+        this.ctx.lineTo((tx / tw * 0.5 + 0.5) * width, (1 - (ty / tw * 0.5 + 0.5)) * height);
+        this.ctx.stroke();
+      }
     }
 
     return performance.now() - start;
