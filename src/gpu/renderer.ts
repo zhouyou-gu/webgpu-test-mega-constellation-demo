@@ -6,8 +6,8 @@ function createSphereVertices(rows = 24, cols = 48): Float32Array {
   const vertices: number[] = [];
 
   const pushVertex = (x: number, y: number, z: number): void => {
-    const tint = 0.2 + 0.8 * Math.max(0, z);
-    vertices.push(x, y, z, 0.08 * tint, 0.34 * tint, 0.68 * tint, 1);
+    const tint = 0.9 + 0.1 * Math.max(0, z);
+    vertices.push(x, y, z, 0.86 * tint, 0.86 * tint, 0.86 * tint, 1);
   };
 
   for (let r = 0; r < rows; r += 1) {
@@ -138,6 +138,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
   private satPositionsNorm: Float32Array<ArrayBufferLike> = new Float32Array();
   private linkSatPairs: Uint32Array<ArrayBufferLike> = new Uint32Array();
+  private linkLts: Uint32Array<ArrayBufferLike> = new Uint32Array();
 
   private yaw = 0;
   private pitch = 0.35;
@@ -247,9 +248,9 @@ export class WebGpuRenderer implements ConstellationRenderer {
       vertexData[dst + 0] = x;
       vertexData[dst + 1] = y;
       vertexData[dst + 2] = z;
-      vertexData[dst + 3] = 0.98;
-      vertexData[dst + 4] = 0.98;
-      vertexData[dst + 5] = 1.0;
+      vertexData[dst + 3] = 0.03;
+      vertexData[dst + 4] = 0.03;
+      vertexData[dst + 5] = 0.03;
       vertexData[dst + 6] = 1.0;
     }
 
@@ -262,8 +263,12 @@ export class WebGpuRenderer implements ConstellationRenderer {
     }
   }
 
-  setLinks(connectedSatPairs: Uint32Array<ArrayBufferLike>): void {
+  setLinks(
+    connectedSatPairs: Uint32Array<ArrayBufferLike>,
+    connectedLts: Uint32Array<ArrayBufferLike>
+  ): void {
     this.linkSatPairs = connectedSatPairs;
+    this.linkLts = connectedLts;
     this.rebuildLinkBuffer();
   }
 
@@ -288,7 +293,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
       colorAttachments: [
         {
           view: this.context.getCurrentTexture().createView(),
-          clearValue: { r: 0.03, g: 0.07, b: 0.12, a: 1 },
+          clearValue: { r: 0.96, g: 0.96, b: 0.96, a: 1 },
           loadOp: 'clear',
           storeOp: 'store'
         }
@@ -365,22 +370,31 @@ export class WebGpuRenderer implements ConstellationRenderer {
       const bp = b * 3;
       const o0 = i * 14;
       const o1 = o0 + 7;
+      const ltIdx = (this.linkLts[i * 2 + 0] ?? 0) % 4;
+      const color =
+        ltIdx === 0
+          ? [0.08, 0.2, 0.9]
+          : ltIdx === 1
+            ? [0.1, 0.75, 0.1]
+            : ltIdx === 2
+              ? [0.92, 0.08, 0.08]
+              : [0.72, 0.72, 0.0];
 
       vertices[o0 + 0] = this.satPositionsNorm[ap + 0];
       vertices[o0 + 1] = this.satPositionsNorm[ap + 1];
       vertices[o0 + 2] = this.satPositionsNorm[ap + 2];
-      vertices[o0 + 3] = 0.36;
-      vertices[o0 + 4] = 0.89;
-      vertices[o0 + 5] = 0.95;
-      vertices[o0 + 6] = 0.92;
+      vertices[o0 + 3] = color[0];
+      vertices[o0 + 4] = color[1];
+      vertices[o0 + 5] = color[2];
+      vertices[o0 + 6] = 1;
 
       vertices[o1 + 0] = this.satPositionsNorm[bp + 0];
       vertices[o1 + 1] = this.satPositionsNorm[bp + 1];
       vertices[o1 + 2] = this.satPositionsNorm[bp + 2];
-      vertices[o1 + 3] = 0.36;
-      vertices[o1 + 4] = 0.89;
-      vertices[o1 + 5] = 0.95;
-      vertices[o1 + 6] = 0.92;
+      vertices[o1 + 3] = color[0];
+      vertices[o1 + 4] = color[1];
+      vertices[o1 + 5] = color[2];
+      vertices[o1 + 6] = 1;
     }
 
     this.ensureLinkBuffer(vertices.byteLength);

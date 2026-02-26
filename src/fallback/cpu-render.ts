@@ -11,6 +11,9 @@ export class CpuRenderer implements ConstellationRenderer {
   private satPositionsNorm: Float32Array<ArrayBufferLike> = new Float32Array();
   private satCount = 0;
   private links: Uint32Array<ArrayBufferLike> = new Uint32Array();
+  private linkLts: Uint32Array<ArrayBufferLike> = new Uint32Array();
+  private earthTexture: HTMLImageElement | null = null;
+  private earthTextureLoaded = false;
 
   private yaw = 0;
   private pitch = 0.35;
@@ -26,6 +29,11 @@ export class CpuRenderer implements ConstellationRenderer {
       throw new Error('2D canvas context unavailable');
     }
     this.ctx = ctx;
+    this.earthTexture = new Image();
+    this.earthTexture.src = './population_density_texture.png';
+    this.earthTexture.onload = () => {
+      this.earthTextureLoaded = true;
+    };
     this.attachCameraControls();
     this.resize();
   }
@@ -39,8 +47,12 @@ export class CpuRenderer implements ConstellationRenderer {
     }
   }
 
-  setLinks(connectedSatPairs: Uint32Array<ArrayBufferLike>): void {
+  setLinks(
+    connectedSatPairs: Uint32Array<ArrayBufferLike>,
+    connectedLts: Uint32Array<ArrayBufferLike>
+  ): void {
     this.links = connectedSatPairs;
+    this.linkLts = connectedLts;
   }
 
   renderFrame(simTimeSec: number): number {
@@ -51,10 +63,7 @@ export class CpuRenderer implements ConstellationRenderer {
     const height = this.canvas.height;
     this.ctx.clearRect(0, 0, width, height);
 
-    const gradient = this.ctx.createRadialGradient(width * 0.25, height * 0.2, 50, width * 0.5, height * 0.5, width * 0.8);
-    gradient.addColorStop(0, '#12355a');
-    gradient.addColorStop(1, '#071420');
-    this.ctx.fillStyle = gradient;
+    this.ctx.fillStyle = '#f2f2f2';
     this.ctx.fillRect(0, 0, width, height);
 
     const aspect = width / Math.max(1, height);
@@ -67,15 +76,45 @@ export class CpuRenderer implements ConstellationRenderer {
     const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 1, 0]);
     const viewProj = mat4Multiply(proj, view);
 
-    this.ctx.beginPath();
-    this.ctx.fillStyle = '#1a4d77';
-    this.ctx.arc(width * 0.5, height * 0.5, Math.min(width, height) * 0.2, 0, Math.PI * 2);
-    this.ctx.fill();
+    const earthR = Math.min(width, height) * 0.3;
+    const earthX = width * 0.5;
+    const earthY = height * 0.5;
 
-    this.ctx.strokeStyle = 'rgba(100, 220, 250, 0.3)';
-    this.ctx.lineWidth = 1;
+    if (this.earthTextureLoaded && this.earthTexture) {
+      this.ctx.save();
+      this.ctx.translate(earthX, earthY);
+      this.ctx.rotate(earthSpin * 3.5);
+      this.ctx.beginPath();
+      this.ctx.arc(0, 0, earthR, 0, Math.PI * 2);
+      this.ctx.clip();
+      this.ctx.drawImage(this.earthTexture, -earthR, -earthR, earthR * 2, earthR * 2);
+      this.ctx.restore();
+    } else {
+      this.ctx.beginPath();
+      this.ctx.fillStyle = '#e8e8e8';
+      this.ctx.arc(earthX, earthY, earthR, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
+
     this.ctx.beginPath();
+    this.ctx.arc(earthX, earthY, earthR, 0, Math.PI * 2);
+    this.ctx.strokeStyle = '#b8b8b8';
+    this.ctx.lineWidth = 1;
+    this.ctx.stroke();
+
     const pairCount = Math.floor(this.links.length / 2);
+    const ltColor = (idx: number): string => {
+      switch (idx % 4) {
+        case 0:
+          return 'rgba(20, 50, 220, 0.9)';
+        case 1:
+          return 'rgba(30, 180, 40, 0.9)';
+        case 2:
+          return 'rgba(235, 30, 30, 0.9)';
+        default:
+          return 'rgba(180, 180, 0, 0.9)';
+      }
+    };
     for (let i = 0; i < pairCount; i += 1) {
       const a = this.links[i * 2 + 0];
       const b = this.links[i * 2 + 1];
@@ -103,12 +142,15 @@ export class CpuRenderer implements ConstellationRenderer {
       const bnx = (bx / bw) * 0.5 + 0.5;
       const bny = 1 - ((by / bw) * 0.5 + 0.5);
 
+      this.ctx.strokeStyle = ltColor(this.linkLts[i * 2 + 0] ?? 0);
+      this.ctx.lineWidth = 1.4;
+      this.ctx.beginPath();
       this.ctx.moveTo(anx * width, any * height);
       this.ctx.lineTo(bnx * width, bny * height);
+      this.ctx.stroke();
     }
-    this.ctx.stroke();
 
-    this.ctx.fillStyle = '#f1f7ff';
+    this.ctx.fillStyle = '#000000';
     for (let i = 0; i < this.satCount; i += 1) {
       const p = i * 3;
       const [x, y, z, w] = transformToClip(

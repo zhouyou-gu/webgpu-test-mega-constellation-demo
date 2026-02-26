@@ -124,7 +124,7 @@ export async function startApp(): Promise<void> {
       state.linkCount = msg.matchedCount;
       state.candidateCount = msg.candidateCount;
       state.matchingMs = msg.computeMs;
-      renderer.setLinks(msg.connectedSatPairs);
+      renderer.setLinks(msg.connectedSatPairs, msg.connectedLts);
     }
   };
 

@@ -5,7 +5,7 @@ export const EARTH_RADIUS_KM = 6371;
 export const DEFAULT_LINK_CONFIG: LinkConfig = {
   maxDistanceKm: 3000,
   forThetaDeg: 15,
-  minViewTimeSec: 100
+  minViewTimeSec: 0
 };
 
 export const SIMULATION_CONFIG = {
