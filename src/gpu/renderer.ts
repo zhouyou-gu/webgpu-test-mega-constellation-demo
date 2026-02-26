@@ -58,12 +58,6 @@ function createGeometryPipeline(
 struct Camera {
   viewProj: mat4x4<f32>,
 };
-struct Params {
-  earthOffset: f32,
-  _pad0: f32,
-  _pad1: f32,
-  _pad2: f32,
-};
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
@@ -135,6 +129,12 @@ function createSpherePipeline(
 struct Camera {
   viewProj: mat4x4<f32>,
 };
+struct Params {
+  earthOffset: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
+};
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
@@ -166,7 +166,9 @@ fn vsMain(input: VertexIn) -> VertexOut {
 @fragment
 fn fsMain(input: VertexOut) -> @location(0) vec4<f32> {
   let n = normalize(input.worldPos);
-  var u = atan2(n.y, n.x) / (2.0 * 3.141592653589793) + 0.5 + params.earthOffset;
+  // Earth spins eastward in inertial frame; apply negative texture phase offset.
+  let u0 = atan2(n.y, n.x) / (2.0 * 3.141592653589793) + 0.5 - params.earthOffset;
+  let u = fract(u0);
   let v = acos(clamp(n.z, -1.0, 1.0)) / 3.141592653589793;
   let tex = textureSample(earthTexture, earthSampler, vec2<f32>(u, v));
   return vec4<f32>(tex.rgb, 1.0);
@@ -206,6 +208,101 @@ fn fsMain(input: VertexOut) -> @location(0) vec4<f32> {
   });
 }
 
+function createSatellitePipeline(
+  device: GPUDevice,
+  format: GPUTextureFormat,
+  layout: GPUBindGroupLayout
+): GPURenderPipeline {
+  const module = device.createShaderModule({
+    code: `
+struct Camera {
+  viewProj: mat4x4<f32>,
+};
+struct SatParams {
+  viewport: vec2<f32>,
+  pointPx: f32,
+  _pad0: f32,
+};
+
+@group(0) @binding(0)
+var<uniform> camera: Camera;
+@group(0) @binding(1)
+var<uniform> satParams: SatParams;
+
+struct InstanceIn {
+  @location(0) position: vec3<f32>,
+  @location(1) color: vec4<f32>,
+};
+
+struct VertexOut {
+  @builtin(position) position: vec4<f32>,
+  @location(0) color: vec4<f32>,
+};
+
+fn corner(vid: u32) -> vec2<f32> {
+  if (vid == 0u) { return vec2<f32>(-1.0, -1.0); }
+  if (vid == 1u) { return vec2<f32>( 1.0, -1.0); }
+  if (vid == 2u) { return vec2<f32>( 1.0,  1.0); }
+  if (vid == 3u) { return vec2<f32>(-1.0, -1.0); }
+  if (vid == 4u) { return vec2<f32>( 1.0,  1.0); }
+  return vec2<f32>(-1.0,  1.0);
+}
+
+@vertex
+fn vsMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  input: InstanceIn
+) -> VertexOut {
+  var out: VertexOut;
+  let baseClip = camera.viewProj * vec4<f32>(input.position, 1.0);
+  let c = corner(vertexIndex);
+  let pxToClip = vec2<f32>(2.0 / satParams.viewport.x, 2.0 / satParams.viewport.y);
+  let offset = c * satParams.pointPx * pxToClip * baseClip.w;
+  out.position = vec4<f32>(baseClip.xy + offset, baseClip.zw);
+  out.color = input.color;
+  return out;
+}
+
+@fragment
+fn fsMain(input: VertexOut) -> @location(0) vec4<f32> {
+  return input.color;
+}
+`
+  });
+
+  return device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    vertex: {
+      module,
+      entryPoint: 'vsMain',
+      buffers: [
+        {
+          arrayStride: 7 * 4,
+          stepMode: 'instance',
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 3 * 4, format: 'float32x4' }
+          ]
+        }
+      ]
+    },
+    fragment: {
+      module,
+      entryPoint: 'fsMain',
+      targets: [{ format }]
+    },
+    primitive: {
+      topology: 'triangle-list',
+      cullMode: 'none'
+    },
+    depthStencil: {
+      depthWriteEnabled: true,
+      depthCompare: 'less',
+      format: 'depth24plus'
+    }
+  });
+}
+
 async function loadEarthBitmap(): Promise<ImageBitmap | null> {
   try {
     const res = await fetch('./population_density_texture.png', { cache: 'force-cache' });
@@ -229,8 +326,10 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
   private readonly cameraBuffer: GPUBuffer;
   private readonly sphereParamBuffer: GPUBuffer;
+  private readonly satelliteParamBuffer: GPUBuffer;
   private readonly cameraBindGroup: GPUBindGroup;
   private readonly sphereBindGroup: GPUBindGroup;
+  private readonly satelliteBindGroup: GPUBindGroup;
 
   private readonly spherePipeline: GPURenderPipeline;
   private readonly satellitePipeline: GPURenderPipeline;
@@ -260,6 +359,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
   private satVelNorm: Float32Array<ArrayBufferLike> = new Float32Array();
   private linkSatPairs: Uint32Array<ArrayBufferLike> = new Uint32Array();
   private linkLts: Uint32Array<ArrayBufferLike> = new Uint32Array();
+  private earthOffsetBase = 0;
 
   private yaw = 0;
   private pitch = Math.PI * 0.25;
@@ -279,12 +379,17 @@ export class WebGpuRenderer implements ConstellationRenderer {
     this.device = device;
     this.context = context;
     this.format = format;
+    this.earthOffsetBase = this.computeSiderealOffsetSeconds(Date.now() / 1000);
 
     this.cameraBuffer = device.createBuffer({
       size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
     this.sphereParamBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
+    this.satelliteParamBuffer = device.createBuffer({
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
@@ -298,6 +403,12 @@ export class WebGpuRenderer implements ConstellationRenderer {
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }
+      ]
+    });
+    const satelliteLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
       ]
     });
 
@@ -343,9 +454,16 @@ export class WebGpuRenderer implements ConstellationRenderer {
         { binding: 3, resource: { buffer: this.sphereParamBuffer } }
       ]
     });
+    this.satelliteBindGroup = device.createBindGroup({
+      layout: satelliteLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraBuffer } },
+        { binding: 1, resource: { buffer: this.satelliteParamBuffer } }
+      ]
+    });
 
     this.spherePipeline = createSpherePipeline(device, format, sphereLayout);
-    this.satellitePipeline = createGeometryPipeline(device, format, 'point-list', uniformLayout);
+    this.satellitePipeline = createSatellitePipeline(device, format, satelliteLayout);
     this.linkPipeline = createGeometryPipeline(device, format, 'line-list', uniformLayout);
 
     const sphereVertices = createSphereVertices();
@@ -479,7 +597,12 @@ export class WebGpuRenderer implements ConstellationRenderer {
     const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 1, 0]);
     const viewProj = mat4Multiply(proj, view);
     this.device.queue.writeBuffer(this.cameraBuffer, 0, viewProj as BufferSource);
-    const earthOffset = (simTimeSec * (1 / 86164)) % 1;
+    this.device.queue.writeBuffer(
+      this.satelliteParamBuffer,
+      0,
+      new Float32Array([this.canvas.width, this.canvas.height, 3.0, 0])
+    );
+    const earthOffset = (this.earthOffsetBase + simTimeSec * (1 / 86164)) % 1;
     this.device.queue.writeBuffer(this.sphereParamBuffer, 0, new Float32Array([earthOffset, 0, 0, 0]));
 
     const encoder = this.device.createCommandEncoder();
@@ -517,7 +640,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
       pass.draw(this.linkVertexCount);
     }
 
-    if (this.terminalVertexCount > 0 && this.distance <= 2.05) {
+    if (this.terminalVertexCount > 0 && this.distance <= 2.35) {
       pass.setPipeline(this.linkPipeline);
       pass.setBindGroup(0, this.cameraBindGroup);
       pass.setVertexBuffer(0, this.terminalBuffer);
@@ -526,9 +649,9 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
     if (this.satelliteVertexCount > 0) {
       pass.setPipeline(this.satellitePipeline);
-      pass.setBindGroup(0, this.cameraBindGroup);
+      pass.setBindGroup(0, this.satelliteBindGroup);
       pass.setVertexBuffer(0, this.satelliteBuffer);
-      pass.draw(this.satelliteVertexCount);
+      pass.draw(6, this.satelliteVertexCount);
     }
 
     pass.end();
@@ -628,10 +751,10 @@ export class WebGpuRenderer implements ConstellationRenderer {
     }
     const satCount = Math.floor(this.satPositionsNorm.length / 3);
     const linePerSat = 4;
-    const stride = 24;
+    const stride = 1;
     const n = Math.ceil(satCount / stride);
     const vertices = new Float32Array(n * linePerSat * 2 * 7);
-    const arrowLen = 0.02;
+    const arrowLen = 0.012;
     const colors = [
       [0.08, 0.2, 0.9],
       [0.1, 0.75, 0.1],
@@ -748,7 +871,16 @@ export class WebGpuRenderer implements ConstellationRenderer {
     this.canvas.addEventListener('wheel', (ev) => {
       ev.preventDefault();
       const step = Math.sign(ev.deltaY) * 0.15;
-      this.distance = Math.max(1.4, Math.min(6.0, this.distance + step));
+      this.distance = Math.max(1.15, Math.min(6.0, this.distance + step));
     });
+  }
+
+  private computeSiderealOffsetSeconds(unixSeconds: number): number {
+    // Approximate GMST fraction at epoch; this aligns Earth texture orientation with propagated satellites.
+    const jd = unixSeconds / 86400 + 2440587.5;
+    const d = jd - 2451545.0;
+    const gmstHours = 18.697374558 + 24.06570982441908 * d;
+    const wrapped = ((gmstHours % 24) + 24) % 24;
+    return wrapped / 24;
   }
 }

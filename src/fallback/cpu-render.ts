@@ -294,7 +294,7 @@ export class CpuRenderer implements ConstellationRenderer {
     this.canvas.addEventListener('wheel', (ev) => {
       ev.preventDefault();
       const step = Math.sign(ev.deltaY) * 0.15;
-      this.distance = Math.max(1.4, Math.min(6.0, this.distance + step));
+      this.distance = Math.max(1.15, Math.min(6.0, this.distance + step));
     });
   }
 }

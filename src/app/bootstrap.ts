@@ -80,8 +80,9 @@ export async function startApp(): Promise<void> {
   };
   if (gpuRenderer) {
     const device = gpuRenderer.getDevice();
-    device.addEventListener('uncapturederror', () => {
-      switchToCpu('WebGPU runtime error; switched to CPU fallback.');
+    device.addEventListener('uncapturederror', (event) => {
+      const detail = event.error instanceof Error ? event.error.message : 'unknown validation/runtime error';
+      switchToCpu(`WebGPU runtime error (${detail}); switched to CPU fallback.`);
     });
     void device.lost.then(() => {
       switchToCpu('WebGPU device lost; switched to CPU fallback.');
@@ -211,7 +212,12 @@ export async function startApp(): Promise<void> {
   }, linkIntervalMs);
 
   const frame = (): void => {
-    state.renderMs = renderer.renderFrame(state.simTimeSec);
+    try {
+      state.renderMs = renderer.renderFrame(state.simTimeSec);
+    } catch (err) {
+      switchToCpu(`WebGPU render failure (${err instanceof Error ? err.message : String(err)}); switched to CPU fallback.`);
+      state.renderMs = renderer.renderFrame(state.simTimeSec);
+    }
     overlay.render(toOverlay(effectiveMode, state));
     requestAnimationFrame(frame);
   };
