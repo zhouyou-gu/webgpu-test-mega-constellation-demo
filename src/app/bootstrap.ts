@@ -33,7 +33,6 @@ export async function startApp(): Promise<void> {
     throw new Error('App bootstrap failed: missing #scene or #overlay');
   }
 
-  const overlay = new StatusOverlay(overlayEl);
   const state: RuntimeState = {
     satCount: 0,
     linkCount: 0,
@@ -55,6 +54,27 @@ export async function startApp(): Promise<void> {
 
   const mode: RuntimeMode = renderer.mode;
   let effectiveMode: RuntimeMode = mode;
+  let timeScale = SIMULATION_CONFIG.timeScale;
+  let simBaseSec = 0;
+  let realBaseMs = performance.now();
+  const getCurrentSimTimeSec = (): number =>
+    simBaseSec + ((performance.now() - realBaseMs) / 1000) * timeScale;
+  const setTimeScale = (nextScale: number): void => {
+    const clamped = Math.max(1, Math.min(30, nextScale));
+    const now = performance.now();
+    const currentSim = simBaseSec + ((now - realBaseMs) / 1000) * timeScale;
+    simBaseSec = currentSim;
+    realBaseMs = now;
+    timeScale = clamped;
+  };
+  let resetSimulationTimeToNow = (): void => {};
+  const overlay = new StatusOverlay(overlayEl, {
+    initialTimeScale: timeScale,
+    onTimeScaleChange: setTimeScale,
+    onResetSimulationTime: () => {
+      resetSimulationTimeToNow();
+    }
+  });
   let lastPositions: Float32Array<ArrayBufferLike> | null = null;
   let lastVelocities: Float32Array<ArrayBufferLike> | null = null;
   let lastSatCount = 0;
@@ -96,7 +116,7 @@ export async function startApp(): Promise<void> {
     state.tleUpdatedUtc = snapshot.meta.fetched_at_utc;
   } catch (err) {
     state.warning = `TLE load failed: ${err instanceof Error ? err.message : String(err)}`;
-    overlay.render(toOverlay(mode, state));
+    overlay.render(toOverlay(mode, state, timeScale));
     return;
   }
 
@@ -108,6 +128,17 @@ export async function startApp(): Promise<void> {
   });
   let propBusy = false;
   let linkBusy = false;
+  resetSimulationTimeToNow = (): void => {
+    simBaseSec = 0;
+    realBaseMs = performance.now();
+    state.simTimeSec = 0;
+    propBusy = false;
+    const resetReq: PropagatorRequest = {
+      type: 'RESET_EPOCH',
+      epochUtc: new Date().toISOString()
+    };
+    propagator.postMessage(resetReq);
+  };
 
   propagator.onmessage = (event: MessageEvent<PropagatorResponse>) => {
     const msg = event.data;
@@ -181,7 +212,6 @@ export async function startApp(): Promise<void> {
   };
   linker.postMessage(configReq);
 
-  const startReal = performance.now();
   const propagationIntervalMs =
     1000 / (mode === 'gpu' ? SIMULATION_CONFIG.propagationHzGpu : SIMULATION_CONFIG.propagationHzCpu);
   const linkIntervalMs =
@@ -192,7 +222,7 @@ export async function startApp(): Promise<void> {
       return;
     }
     propBusy = true;
-    const simTimeSec = ((performance.now() - startReal) / 1000) * SIMULATION_CONFIG.timeScale;
+    const simTimeSec = getCurrentSimTimeSec();
     state.simTimeSec = simTimeSec;
 
     const req: PropagatorRequest = {
@@ -218,16 +248,17 @@ export async function startApp(): Promise<void> {
       switchToCpu(`WebGPU render failure (${err instanceof Error ? err.message : String(err)}); switched to CPU fallback.`);
       state.renderMs = renderer.renderFrame(state.simTimeSec);
     }
-    overlay.render(toOverlay(effectiveMode, state));
+    overlay.render(toOverlay(effectiveMode, state, timeScale));
     requestAnimationFrame(frame);
   };
 
   requestAnimationFrame(frame);
 }
 
-function toOverlay(mode: RuntimeMode, state: RuntimeState): OverlayMetrics {
+function toOverlay(mode: RuntimeMode, state: RuntimeState, timeScale: number): OverlayMetrics {
   return {
     mode,
+    timeScale,
     satCount: state.satCount,
     linkCount: state.linkCount,
     candidateCount: state.candidateCount,

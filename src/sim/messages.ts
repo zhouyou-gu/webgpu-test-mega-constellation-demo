@@ -18,6 +18,7 @@ export interface TleSnapshotMeta {
 
 export type PropagatorRequest =
   | { type: 'INIT_TLE'; tleText: string; epochUtc: string }
+  | { type: 'RESET_EPOCH'; epochUtc: string }
   | { type: 'STEP_PROPAGATION'; simTimeSec: number };
 
 export type PropagatorResponse =
@@ -57,6 +58,7 @@ export type LinkWorkerResponse =
 
 export interface OverlayMetrics {
   mode: RuntimeMode;
+  timeScale: number;
   satCount: number;
   linkCount: number;
   candidateCount: number;

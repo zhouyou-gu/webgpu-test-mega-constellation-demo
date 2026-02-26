@@ -114,6 +114,16 @@ self.onmessage = (event: MessageEvent<PropagatorRequest>) => {
       return;
     }
 
+    if (msg.type === 'RESET_EPOCH') {
+      epoch = new Date(msg.epochUtc);
+      const response: PropagatorResponse = {
+        type: 'READY',
+        satCount: satrecs.length
+      };
+      self.postMessage(response);
+      return;
+    }
+
     if (msg.type === 'STEP_PROPAGATION') {
       const response = runPropagation(msg.simTimeSec);
       if (response.type === 'STATE') {
