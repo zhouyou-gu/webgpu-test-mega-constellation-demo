@@ -1,0 +1,25 @@
+{
+  "name": "webgpu-test-mega-constellation-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "update:tle": "node scripts/update-tle.mjs"
+  },
+  "dependencies": {
+    "pako": "^2.1.0",
+    "satellite.js": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/pako": "^2.0.4",
+    "@webgpu/types": "^0.1.64",
+    "playwright": "^1.58.2",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}
