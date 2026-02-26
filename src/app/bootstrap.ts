@@ -26,7 +26,7 @@ interface RuntimeState {
 }
 
 export async function startApp(): Promise<void> {
-  const canvas = document.getElementById('scene');
+  let canvas = document.getElementById('scene') as HTMLCanvasElement | null;
   const overlayEl = document.getElementById('overlay');
 
   if (!(canvas instanceof HTMLCanvasElement) || !(overlayEl instanceof HTMLElement)) {
@@ -54,6 +54,12 @@ export async function startApp(): Promise<void> {
   }
 
   const mode: RuntimeMode = renderer.mode;
+  let effectiveMode: RuntimeMode = mode;
+  let lastPositions: Float32Array<ArrayBufferLike> | null = null;
+  let lastVelocities: Float32Array<ArrayBufferLike> | null = null;
+  let lastSatCount = 0;
+  let lastConnectedSatPairs: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
+  let lastConnectedLts: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
 
   let tleText = '';
   try {
@@ -94,6 +100,9 @@ export async function startApp(): Promise<void> {
       state.satCount = msg.satCount;
       state.simTimeSec = msg.simTimeSec;
       state.propagationMs = msg.propagationMs;
+      lastPositions = msg.positions;
+      lastVelocities = msg.velocities;
+      lastSatCount = msg.satCount;
 
       renderer.setSatelliteState(msg.positions, msg.velocities, msg.satCount);
 
@@ -124,6 +133,8 @@ export async function startApp(): Promise<void> {
       state.linkCount = msg.matchedCount;
       state.candidateCount = msg.candidateCount;
       state.matchingMs = msg.computeMs;
+      lastConnectedSatPairs = msg.connectedSatPairs;
+      lastConnectedLts = msg.connectedLts;
       renderer.setLinks(msg.connectedSatPairs, msg.connectedLts);
     }
   };
@@ -174,9 +185,34 @@ export async function startApp(): Promise<void> {
 
   const frame = (): void => {
     state.renderMs = renderer.renderFrame(state.simTimeSec);
-    overlay.render(toOverlay(mode, state));
+    overlay.render(toOverlay(effectiveMode, state));
     requestAnimationFrame(frame);
   };
+
+  // Safety net: if WebGPU path produces black output, fall back to CPU renderer.
+  setTimeout(() => {
+    if (effectiveMode !== 'gpu') {
+      return;
+    }
+    if (!canvas) {
+      return;
+    }
+    const black = isCanvasMostlyBlack(canvas);
+    if (!black) {
+      return;
+    }
+    const newCanvas = document.createElement('canvas');
+    newCanvas.id = 'scene';
+    canvas.replaceWith(newCanvas);
+    canvas = newCanvas;
+    renderer = new CpuRenderer(canvas);
+    effectiveMode = 'cpu';
+    state.warning = 'WebGPU render output was invalid; switched to CPU fallback.';
+    if (lastPositions && lastVelocities && lastSatCount > 0) {
+      renderer.setSatelliteState(lastPositions, lastVelocities, lastSatCount);
+      renderer.setLinks(lastConnectedSatPairs, lastConnectedLts);
+    }
+  }, 5000);
 
   requestAnimationFrame(frame);
 }
@@ -194,4 +230,25 @@ function toOverlay(mode: RuntimeMode, state: RuntimeState): OverlayMetrics {
     tleUpdatedUtc: state.tleUpdatedUtc,
     warning: state.warning
   };
+}
+
+function isCanvasMostlyBlack(canvas: HTMLCanvasElement): boolean {
+  const probe = document.createElement('canvas');
+  probe.width = canvas.width;
+  probe.height = canvas.height;
+  const ctx = probe.getContext('2d');
+  if (!ctx || probe.width === 0 || probe.height === 0) {
+    return false;
+  }
+  ctx.drawImage(canvas, 0, 0);
+  const sample = ctx.getImageData(0, 0, probe.width, probe.height).data;
+  let lit = 0;
+  const step = 4 * 16;
+  for (let i = 0; i < sample.length; i += step) {
+    if (sample[i] > 8 || sample[i + 1] > 8 || sample[i + 2] > 8) {
+      lit += 1;
+    }
+  }
+  const samples = Math.max(1, Math.floor(sample.length / step));
+  return lit / samples < 0.02;
 }
