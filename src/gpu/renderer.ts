@@ -108,6 +108,98 @@ fn fsMain(input: VertexOut) -> @location(0) vec4<f32> {
   });
 }
 
+function createSpherePipeline(
+  device: GPUDevice,
+  format: GPUTextureFormat,
+  layout: GPUBindGroupLayout
+): GPURenderPipeline {
+  const module = device.createShaderModule({
+    code: `
+struct Camera {
+  viewProj: mat4x4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> camera: Camera;
+@group(0) @binding(1)
+var earthSampler: sampler;
+@group(0) @binding(2)
+var earthTexture: texture_2d<f32>;
+
+struct VertexIn {
+  @location(0) position: vec3<f32>,
+  @location(1) _color: vec4<f32>,
+};
+
+struct VertexOut {
+  @builtin(position) position: vec4<f32>,
+  @location(0) worldPos: vec3<f32>,
+};
+
+@vertex
+fn vsMain(input: VertexIn) -> VertexOut {
+  var out: VertexOut;
+  out.position = camera.viewProj * vec4<f32>(input.position, 1.0);
+  out.worldPos = input.position;
+  return out;
+}
+
+@fragment
+fn fsMain(input: VertexOut) -> @location(0) vec4<f32> {
+  let n = normalize(input.worldPos);
+  var u = atan2(n.y, n.x) / (2.0 * 3.141592653589793) + 0.5;
+  let v = acos(clamp(n.z, -1.0, 1.0)) / 3.141592653589793;
+  let tex = textureSample(earthTexture, earthSampler, vec2<f32>(u, v));
+  return vec4<f32>(tex.rgb, 1.0);
+}
+`
+  });
+
+  return device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    vertex: {
+      module,
+      entryPoint: 'vsMain',
+      buffers: [
+        {
+          arrayStride: 7 * 4,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 3 * 4, format: 'float32x4' }
+          ]
+        }
+      ]
+    },
+    fragment: {
+      module,
+      entryPoint: 'fsMain',
+      targets: [{ format }]
+    },
+    primitive: {
+      topology: 'triangle-list',
+      cullMode: 'back'
+    },
+    depthStencil: {
+      depthWriteEnabled: true,
+      depthCompare: 'less',
+      format: 'depth24plus'
+    }
+  });
+}
+
+async function loadEarthBitmap(): Promise<ImageBitmap | null> {
+  try {
+    const res = await fetch('./population_density_texture.png', { cache: 'force-cache' });
+    if (!res.ok) {
+      return null;
+    }
+    const blob = await res.blob();
+    return await createImageBitmap(blob);
+  } catch {
+    return null;
+  }
+}
+
 export class WebGpuRenderer implements ConstellationRenderer {
   readonly mode = 'gpu' as const;
 
@@ -118,6 +210,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
   private readonly cameraBuffer: GPUBuffer;
   private readonly cameraBindGroup: GPUBindGroup;
+  private readonly sphereBindGroup: GPUBindGroup;
 
   private readonly spherePipeline: GPURenderPipeline;
   private readonly satellitePipeline: GPURenderPipeline;
@@ -125,6 +218,8 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
   private readonly sphereBuffer: GPUBuffer;
   private sphereVertexCount = 0;
+  private readonly earthTexture: GPUTexture;
+  private readonly earthSampler: GPUSampler;
 
   private satelliteBuffer: GPUBuffer;
   private satelliteBufferSize = 7 * 4;
@@ -141,7 +236,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
   private linkLts: Uint32Array<ArrayBufferLike> = new Uint32Array();
 
   private yaw = 0;
-  private pitch = 0.35;
+  private pitch = Math.PI * 0.25;
   private distance = SIMULATION_CONFIG.cameraDistance;
   private dragging = false;
   private lastX = 0;
@@ -151,7 +246,8 @@ export class WebGpuRenderer implements ConstellationRenderer {
     canvas: HTMLCanvasElement,
     device: GPUDevice,
     context: GPUCanvasContext,
-    format: GPUTextureFormat
+    format: GPUTextureFormat,
+    earthBitmap: ImageBitmap | null
   ) {
     this.canvas = canvas;
     this.device = device;
@@ -166,13 +262,57 @@ export class WebGpuRenderer implements ConstellationRenderer {
     const uniformLayout = device.createBindGroupLayout({
       entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }]
     });
+    const sphereLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }
+      ]
+    });
 
     this.cameraBindGroup = device.createBindGroup({
       layout: uniformLayout,
       entries: [{ binding: 0, resource: { buffer: this.cameraBuffer } }]
     });
+    this.earthSampler = device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+      addressModeU: 'repeat',
+      addressModeV: 'clamp-to-edge'
+    });
+    const texW = earthBitmap?.width ?? 1;
+    const texH = earthBitmap?.height ?? 1;
+    this.earthTexture = device.createTexture({
+      size: [texW, texH],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+    });
+    if (earthBitmap) {
+      device.queue.copyExternalImageToTexture(
+        { source: earthBitmap },
+        { texture: this.earthTexture },
+        [earthBitmap.width, earthBitmap.height]
+      );
+    } else {
+      const pixel = new Uint8Array([225, 225, 225, 255]);
+      device.queue.writeTexture(
+        { texture: this.earthTexture },
+        pixel,
+        { bytesPerRow: 4 },
+        { width: 1, height: 1 }
+      );
+    }
+    this.sphereBindGroup = device.createBindGroup({
+      layout: sphereLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraBuffer } },
+        { binding: 1, resource: this.earthSampler },
+        { binding: 2, resource: this.earthTexture.createView() }
+      ]
+    });
 
-    this.spherePipeline = createGeometryPipeline(device, format, 'triangle-list', uniformLayout);
+    this.spherePipeline = createSpherePipeline(device, format, sphereLayout);
     this.satellitePipeline = createGeometryPipeline(device, format, 'point-list', uniformLayout);
     this.linkPipeline = createGeometryPipeline(device, format, 'line-list', uniformLayout);
 
@@ -223,7 +363,8 @@ export class WebGpuRenderer implements ConstellationRenderer {
       alphaMode: 'opaque'
     });
 
-    return new WebGpuRenderer(canvas, device, context, format);
+    const earthBitmap = await loadEarthBitmap();
+    return new WebGpuRenderer(canvas, device, context, format, earthBitmap);
   }
 
   getDevice(): GPUDevice {
@@ -279,10 +420,9 @@ export class WebGpuRenderer implements ConstellationRenderer {
     const aspect = this.canvas.width / Math.max(1, this.canvas.height);
     const proj = mat4Perspective((45 * Math.PI) / 180, aspect, 0.1, 100);
 
-    const earthSpin = simTimeSec * 0.0005;
-    const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw + earthSpin);
+    const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw);
     const eyeY = this.distance * Math.sin(this.pitch);
-    const eyeZ = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw + earthSpin);
+    const eyeZ = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw);
 
     const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 1, 0]);
     const viewProj = mat4Multiply(proj, view);
@@ -306,20 +446,21 @@ export class WebGpuRenderer implements ConstellationRenderer {
       }
     });
 
-    pass.setBindGroup(0, this.cameraBindGroup);
-
     pass.setPipeline(this.spherePipeline);
+    pass.setBindGroup(0, this.sphereBindGroup);
     pass.setVertexBuffer(0, this.sphereBuffer);
     pass.draw(this.sphereVertexCount);
 
     if (this.linkVertexCount > 0) {
       pass.setPipeline(this.linkPipeline);
+      pass.setBindGroup(0, this.cameraBindGroup);
       pass.setVertexBuffer(0, this.linkBuffer);
       pass.draw(this.linkVertexCount);
     }
 
     if (this.satelliteVertexCount > 0) {
       pass.setPipeline(this.satellitePipeline);
+      pass.setBindGroup(0, this.cameraBindGroup);
       pass.setVertexBuffer(0, this.satelliteBuffer);
       pass.draw(this.satelliteVertexCount);
     }
@@ -443,7 +584,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
       this.lastY = ev.clientY;
       this.yaw += dx * 0.005;
       this.pitch += dy * 0.005;
-      this.pitch = Math.max(-1.4, Math.min(1.4, this.pitch));
+      this.pitch = Math.max(-1.55, Math.min(1.55, this.pitch));
     });
 
     this.canvas.addEventListener('pointerup', (ev) => {
@@ -453,8 +594,8 @@ export class WebGpuRenderer implements ConstellationRenderer {
 
     this.canvas.addEventListener('wheel', (ev) => {
       ev.preventDefault();
-      const step = Math.sign(ev.deltaY) * 0.2;
-      this.distance = Math.max(1.5, Math.min(12, this.distance + step));
+      const step = Math.sign(ev.deltaY) * 0.15;
+      this.distance = Math.max(1.4, Math.min(6.0, this.distance + step));
     });
   }
 }

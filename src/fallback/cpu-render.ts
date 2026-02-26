@@ -16,7 +16,7 @@ export class CpuRenderer implements ConstellationRenderer {
   private earthTextureLoaded = false;
 
   private yaw = 0;
-  private pitch = 0.35;
+  private pitch = Math.PI * 0.25;
   private distance = SIMULATION_CONFIG.cameraDistance;
   private dragging = false;
   private lastX = 0;
@@ -70,9 +70,9 @@ export class CpuRenderer implements ConstellationRenderer {
     const proj = mat4Perspective((45 * Math.PI) / 180, aspect, 0.1, 100);
 
     const earthSpin = simTimeSec * 0.0005;
-    const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw + earthSpin);
+    const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw);
     const eyeY = this.distance * Math.sin(this.pitch);
-    const eyeZ = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw + earthSpin);
+    const eyeZ = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw);
     const view = mat4LookAt([eyeX, eyeY, eyeZ], [0, 0, 0], [0, 1, 0]);
     const viewProj = mat4Multiply(proj, view);
 
@@ -205,7 +205,7 @@ export class CpuRenderer implements ConstellationRenderer {
       this.lastY = ev.clientY;
       this.yaw += dx * 0.005;
       this.pitch += dy * 0.005;
-      this.pitch = Math.max(-1.4, Math.min(1.4, this.pitch));
+      this.pitch = Math.max(-1.55, Math.min(1.55, this.pitch));
     });
 
     this.canvas.addEventListener('pointerup', (ev) => {
@@ -215,8 +215,8 @@ export class CpuRenderer implements ConstellationRenderer {
 
     this.canvas.addEventListener('wheel', (ev) => {
       ev.preventDefault();
-      const step = Math.sign(ev.deltaY) * 0.2;
-      this.distance = Math.max(1.5, Math.min(12, this.distance + step));
+      const step = Math.sign(ev.deltaY) * 0.15;
+      this.distance = Math.max(1.4, Math.min(6.0, this.distance + step));
     });
   }
 }

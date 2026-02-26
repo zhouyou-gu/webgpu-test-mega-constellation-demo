@@ -14,7 +14,7 @@ export const SIMULATION_CONFIG = {
   linkHzGpu: 2,
   propagationHzCpu: 3,
   linkHzCpu: 1,
-  cameraDistance: 3.2
+  cameraDistance: 2.5
 };
 
 export const DATA_ENDPOINTS = {
