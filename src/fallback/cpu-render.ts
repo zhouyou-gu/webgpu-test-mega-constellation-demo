@@ -22,6 +22,9 @@ export class CpuRenderer implements ConstellationRenderer {
   private dragging = false;
   private lastX = 0;
   private lastY = 0;
+  private readonly activePointers = new Map<number, { x: number; y: number }>();
+  private pinchStartDistance = 0;
+  private pinchStartCameraDistance = SIMULATION_CONFIG.cameraDistance;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -266,17 +269,49 @@ export class CpuRenderer implements ConstellationRenderer {
   }
 
   private attachCameraControls(): void {
+    this.canvas.style.touchAction = 'none';
+
+    this.canvas.addEventListener('dblclick', () => {
+      this.resetCamera();
+    });
+
     this.canvas.addEventListener('pointerdown', (ev) => {
-      this.dragging = true;
-      this.lastX = ev.clientX;
-      this.lastY = ev.clientY;
+      this.activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
       this.canvas.setPointerCapture(ev.pointerId);
+
+      if (this.activePointers.size === 1) {
+        this.dragging = true;
+        this.lastX = ev.clientX;
+        this.lastY = ev.clientY;
+      } else {
+        this.dragging = false;
+      }
+
+      if (this.activePointers.size >= 2) {
+        this.pinchStartDistance = this.getActivePinchDistance();
+        this.pinchStartCameraDistance = this.distance;
+      }
     });
 
     this.canvas.addEventListener('pointermove', (ev) => {
+      if (!this.activePointers.has(ev.pointerId)) {
+        return;
+      }
+      this.activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+      if (this.activePointers.size >= 2) {
+        const d = this.getActivePinchDistance();
+        if (this.pinchStartDistance > 0 && d > 0) {
+          const scale = this.pinchStartDistance / d;
+          this.distance = this.clampDistance(this.pinchStartCameraDistance * scale);
+        }
+        return;
+      }
+
       if (!this.dragging) {
         return;
       }
+
       const dx = ev.clientX - this.lastX;
       const dy = ev.clientY - this.lastY;
       this.lastX = ev.clientX;
@@ -286,15 +321,59 @@ export class CpuRenderer implements ConstellationRenderer {
       this.pitch = Math.max(-1.55, Math.min(1.55, this.pitch));
     });
 
-    this.canvas.addEventListener('pointerup', (ev) => {
+    const onPointerEnd = (ev: PointerEvent): void => {
+      this.activePointers.delete(ev.pointerId);
+      if (this.canvas.hasPointerCapture(ev.pointerId)) {
+        this.canvas.releasePointerCapture(ev.pointerId);
+      }
+
+      if (this.activePointers.size < 2) {
+        this.pinchStartDistance = 0;
+      }
+
+      if (this.activePointers.size === 1) {
+        const remaining = this.activePointers.values().next().value as { x: number; y: number } | undefined;
+        if (remaining) {
+          this.dragging = true;
+          this.lastX = remaining.x;
+          this.lastY = remaining.y;
+          return;
+        }
+      }
       this.dragging = false;
-      this.canvas.releasePointerCapture(ev.pointerId);
-    });
+    };
+
+    this.canvas.addEventListener('pointerup', onPointerEnd);
+    this.canvas.addEventListener('pointercancel', onPointerEnd);
+    this.canvas.addEventListener('lostpointercapture', onPointerEnd);
 
     this.canvas.addEventListener('wheel', (ev) => {
       ev.preventDefault();
       const step = Math.sign(ev.deltaY) * 0.15;
-      this.distance = Math.max(1.15, Math.min(6.0, this.distance + step));
+      this.distance = this.clampDistance(this.distance + step);
     });
+  }
+
+  private resetCamera(): void {
+    this.yaw = 0;
+    this.pitch = Math.PI * 0.25;
+    this.distance = SIMULATION_CONFIG.cameraDistance;
+  }
+
+  private clampDistance(next: number): number {
+    return Math.max(1.15, Math.min(6.0, next));
+  }
+
+  private getActivePinchDistance(): number {
+    if (this.activePointers.size < 2) {
+      return 0;
+    }
+    const it = this.activePointers.values();
+    const a = it.next().value as { x: number; y: number } | undefined;
+    const b = it.next().value as { x: number; y: number } | undefined;
+    if (!a || !b) {
+      return 0;
+    }
+    return Math.hypot(a.x - b.x, a.y - b.y);
   }
 }

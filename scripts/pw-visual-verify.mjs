@@ -22,10 +22,21 @@ page.on('console', (m) => {
 await page.goto(url, { waitUntil: 'networkidle', timeout: 120000 });
 await page.waitForTimeout(waitMs);
 
-const overlayText = await page.locator('#overlay').innerText();
-const satCount = Number((overlayText.match(/Satellites:\s*(\d+)/)?.[1]) ?? -1);
-const linkCount = Number((overlayText.match(/Connected links:\s*(\d+)/)?.[1]) ?? -1);
-const modeObserved = (overlayText.match(/Mode:\s*(\w+)/)?.[1] ?? 'UNKNOWN');
+const overlay = await page.evaluate(() => {
+  const all = (document.querySelector('#overlay')?.textContent ?? '').replace(/\s+/g, ' ');
+  const sat = Number((all.match(/#n_sats:\s*(\d+)/)?.[1]) ?? (all.match(/Satellites:\s*(\d+)/)?.[1] ?? -1));
+  const links = Number((all.match(/#n_c_lp:\s*(\d+)/)?.[1]) ?? (all.match(/Connected links:\s*(\d+)/)?.[1] ?? -1));
+  const mode =
+    (document.querySelector('.hud-mode-chip')?.textContent?.trim() ??
+      all.match(/Mode:\s*(\w+)/)?.[1] ??
+      all.match(/\bMode\s+(\w+)/)?.[1] ??
+      'UNKNOWN');
+  return { sat, links, mode };
+});
+
+const satCount = overlay.sat;
+const linkCount = overlay.links;
+const modeObserved = overlay.mode;
 
 const canvasStats = await page.evaluate(() => {
   const canvas = document.querySelector('#scene');

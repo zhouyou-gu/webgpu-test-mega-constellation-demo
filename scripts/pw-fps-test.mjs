@@ -36,11 +36,24 @@ const samples = [];
 const stopAt = Date.now() + durationSec * 1000;
 while (Date.now() < stopAt) {
   await page.waitForTimeout(1000);
-  const overlayText = await page.locator('#overlay').innerText();
-  const sat = Number((overlayText.match(/Satellites:\s*(\d+)/)?.[1]) ?? -1);
-  const links = Number((overlayText.match(/Connected links:\s*(\d+)/)?.[1]) ?? -1);
-  const renderMs = Number((overlayText.match(/Render:\s*([0-9.]+)\s*ms/)?.[1]) ?? NaN);
-  const modeText = (overlayText.match(/Mode:\s*(\w+)/)?.[1] ?? 'UNKNOWN');
+  const metrics = await page.evaluate(() => {
+    const all = (document.querySelector('#overlay')?.textContent ?? '').replace(/\s+/g, ' ');
+    const sat = Number((all.match(/#n_sats:\s*(\d+)/)?.[1]) ?? (all.match(/Satellites:\s*(\d+)/)?.[1] ?? -1));
+    const links = Number((all.match(/#n_c_lp:\s*(\d+)/)?.[1]) ?? (all.match(/Connected links:\s*(\d+)/)?.[1] ?? -1));
+    const modeText =
+      document.querySelector('.hud-mode-chip')?.textContent?.trim() ??
+      all.match(/Mode:\s*(\w+)/)?.[1] ??
+      all.match(/\bMode\s+(\w+)/)?.[1] ??
+      'UNKNOWN';
+    const drawSec = Number(all.match(/draw_matching:\s*([0-9.]+)\s*s/)?.[1] ?? NaN);
+    const drawMs = Number(all.match(/Render:\s*([0-9.]+)\s*ms/)?.[1] ?? NaN);
+    const renderMs = Number.isFinite(drawMs) ? drawMs : Number.isFinite(drawSec) ? drawSec * 1000 : NaN;
+    return { sat, links, renderMs, modeText };
+  });
+  const sat = metrics.sat;
+  const links = metrics.links;
+  const renderMs = metrics.renderMs;
+  const modeText = metrics.modeText;
   samples.push({ sat, links, renderMs, modeText });
 }
 

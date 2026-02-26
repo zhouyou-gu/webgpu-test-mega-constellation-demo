@@ -14,14 +14,27 @@ await page.waitForTimeout(6000);
 async function snap(name) {
   const p = `/tmp/iter-${mode}-${name}.png`;
   await page.screenshot({ path: p, fullPage: true });
-  const text = await page.locator('#overlay').innerText();
+  const metrics = await page.evaluate(() => {
+    const all = (document.querySelector('#overlay')?.textContent ?? '').replace(/\s+/g, ' ');
+    const modeValue =
+      document.querySelector('.hud-mode-chip')?.textContent?.trim() ??
+      all.match(/Mode:\s*(\w+)/)?.[1] ??
+      all.match(/\bMode\s+(\w+)/)?.[1] ??
+      'UNKNOWN';
+    const sat = Number((all.match(/#n_sats:\s*(\d+)/)?.[1]) ?? (all.match(/Satellites:\s*(\d+)/)?.[1] ?? -1));
+    const links = Number((all.match(/#n_c_lp:\s*(\d+)/)?.[1]) ?? (all.match(/Connected links:\s*(\d+)/)?.[1] ?? -1));
+    const drawSec = Number(all.match(/draw_matching:\s*([0-9.]+)\s*s/)?.[1] ?? NaN);
+    const drawMs = Number(all.match(/Render:\s*([0-9.]+)\s*ms/)?.[1] ?? NaN);
+    const renderMs = Number.isFinite(drawMs) ? drawMs : Number.isFinite(drawSec) ? drawSec * 1000 : NaN;
+    return { modeValue, sat, links, renderMs };
+  });
   return {
     name,
     screenshot: p,
-    modeObserved: (text.match(/Mode:\s*(\w+)/)?.[1] ?? 'UNKNOWN'),
-    sat: Number((text.match(/Satellites:\s*(\d+)/)?.[1]) ?? -1),
-    links: Number((text.match(/Connected links:\s*(\d+)/)?.[1]) ?? -1),
-    renderMs: Number((text.match(/Render:\s*([0-9.]+)\s*ms/)?.[1]) ?? NaN)
+    modeObserved: metrics.modeValue,
+    sat: metrics.sat,
+    links: metrics.links,
+    renderMs: Number.isFinite(metrics.renderMs) ? metrics.renderMs : NaN
   };
 }
 
