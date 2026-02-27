@@ -11,6 +11,7 @@ export class StatusOverlay {
   private readonly el: HTMLElement;
   private readonly panelPre: HTMLElement;
   private readonly warningEl: HTMLElement;
+  private readonly statusSection: HTMLDetailsElement;
   private readonly speedSlider: HTMLInputElement;
   private readonly speedValueEl: HTMLElement;
   private readonly onTimeScaleChange?: (timeScale: number) => void;
@@ -62,6 +63,9 @@ export class StatusOverlay {
 
     this.panelPre = this.mustQuery('[data-pane="status-all"]');
     this.warningEl = this.mustQuery('.hud-warning');
+    this.statusSection = this.mustQueryDetails('.hud-section');
+    // Force deterministic initial UI state even if the browser restores details state.
+    this.statusSection.open = false;
     this.speedSlider = this.mustQuery('#time-speed-slider') as HTMLInputElement;
     this.speedValueEl = this.mustQuery('[data-pane="speed-value"]');
     const resetBtn = this.mustQuery('.hud-reset-btn');
@@ -152,6 +156,14 @@ export class StatusOverlay {
     const node = this.el.querySelector(selector);
     if (!(node instanceof HTMLElement)) {
       throw new Error(`Overlay mount failed for selector: ${selector}`);
+    }
+    return node;
+  }
+
+  private mustQueryDetails(selector: string): HTMLDetailsElement {
+    const node = this.el.querySelector(selector);
+    if (!(node instanceof HTMLDetailsElement)) {
+      throw new Error(`Overlay mount failed for details selector: ${selector}`);
     }
     return node;
   }
