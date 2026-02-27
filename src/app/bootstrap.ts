@@ -1,5 +1,6 @@
 import { CpuRenderer } from '../fallback/cpu-render';
 import { WebGpuRenderer } from '../gpu/renderer';
+import { WebGpuLinkMatcher } from '../gpu/link-matcher';
 import { loadTleSnapshot } from '../data/tle-loader';
 import { DEFAULT_LINK_CONFIG, SIMULATION_CONFIG } from './config';
 import type { ConstellationRenderer } from './types';
@@ -20,9 +21,36 @@ interface RuntimeState {
   simTimeSec: number;
   propagationMs: number;
   matchingMs: number;
+  scoreMs?: number;
+  matchMs?: number;
+  gpuRounds?: number;
+  matcherMode: RuntimeMode;
+  matcherFallbackCount: number;
   renderMs: number;
   tleUpdatedUtc?: string;
   warning?: string;
+}
+
+declare global {
+  interface Window {
+    __mcDebug?: {
+      matcherMode: RuntimeMode;
+      simTimeSec: number;
+      linkCount: number;
+      candidateCount: number;
+      matchingMs: number;
+      scoreMs?: number;
+      matchMs?: number;
+      fallbackCount: number;
+      connectedSatPairs: Uint32Array<ArrayBufferLike>;
+      connectedLts: Uint32Array<ArrayBufferLike>;
+    };
+    __mcControl?: {
+      resetSimulationTime: () => void;
+      setTimeScale: (scale: number) => void;
+      setSimulationEpochUtc: (epochUtc: string) => void;
+    };
+  }
 }
 
 export async function startApp(): Promise<void> {
@@ -40,6 +68,8 @@ export async function startApp(): Promise<void> {
     simTimeSec: 0,
     propagationMs: 0,
     matchingMs: 0,
+    matcherMode: 'cpu',
+    matcherFallbackCount: 0,
     renderMs: 0
   };
 
@@ -47,13 +77,24 @@ export async function startApp(): Promise<void> {
   const gpuRenderer = await WebGpuRenderer.create(canvas);
   if (gpuRenderer) {
     renderer = gpuRenderer;
+    state.matcherMode = 'gpu';
   } else {
     renderer = new CpuRenderer(canvas);
     state.warning = 'WebGPU unavailable. Running CPU fallback in best-effort mode.';
+    state.matcherMode = 'cpu';
   }
 
   const mode: RuntimeMode = renderer.mode;
   let effectiveMode: RuntimeMode = mode;
+  let gpuMatcherEnabled = mode === 'gpu';
+  const matcherParam = new URLSearchParams(window.location.search).get('matcher');
+  if (matcherParam === 'cpu') {
+    gpuMatcherEnabled = false;
+  }
+  if (matcherParam === 'gpu') {
+    gpuMatcherEnabled = mode === 'gpu';
+  }
+  let gpuMatcher: WebGpuLinkMatcher | null = null;
   let timeScale = SIMULATION_CONFIG.timeScale;
   let simBaseSec = 0;
   let realBaseMs = performance.now();
@@ -68,6 +109,34 @@ export async function startApp(): Promise<void> {
     timeScale = clamped;
   };
   let resetSimulationTimeToNow = (): void => {};
+  let resetSimulationTimeToEpoch = (_epochUtc: string): void => {};
+  window.__mcControl = {
+    resetSimulationTime: () => {
+      resetSimulationTimeToNow();
+    },
+    setTimeScale: (scale: number) => {
+      setTimeScale(scale);
+    },
+    setSimulationEpochUtc: (epochUtc: string) => {
+      resetSimulationTimeToEpoch(epochUtc);
+    }
+  };
+  const updateDebug = (patch: Partial<NonNullable<Window['__mcDebug']>>): void => {
+    const current = window.__mcDebug ?? {
+      matcherMode: state.matcherMode,
+      simTimeSec: state.simTimeSec,
+      linkCount: state.linkCount,
+      candidateCount: state.candidateCount,
+      matchingMs: state.matchingMs,
+      scoreMs: state.scoreMs,
+      matchMs: state.matchMs,
+      fallbackCount: state.matcherFallbackCount,
+      connectedSatPairs: new Uint32Array(0),
+      connectedLts: new Uint32Array(0)
+    };
+    window.__mcDebug = { ...current, ...patch };
+  };
+  updateDebug({});
   const overlay = new StatusOverlay(overlayEl, {
     initialTimeScale: timeScale,
     onTimeScaleChange: setTimeScale,
@@ -92,14 +161,19 @@ export async function startApp(): Promise<void> {
     canvas = newCanvas;
     renderer = new CpuRenderer(canvas);
     effectiveMode = 'cpu';
+    gpuMatcherEnabled = false;
+    state.matcherMode = 'cpu';
+    gpuMatcher = null;
     state.warning = reason;
     if (lastPositions && lastVelocities && lastSatCount > 0) {
       renderer.setSatelliteState(lastPositions, lastVelocities, lastSatCount);
       renderer.setLinks(lastConnectedSatPairs, lastConnectedLts);
     }
+    updateDebug({ matcherMode: state.matcherMode, fallbackCount: state.matcherFallbackCount });
   };
   if (gpuRenderer) {
     const device = gpuRenderer.getDevice();
+    gpuMatcher = WebGpuLinkMatcher.create(device);
     device.addEventListener('uncapturederror', (event) => {
       const detail = event.error instanceof Error ? event.error.message : 'unknown validation/runtime error';
       switchToCpu(`WebGPU runtime error (${detail}); switched to CPU fallback.`);
@@ -129,15 +203,19 @@ export async function startApp(): Promise<void> {
   let propBusy = false;
   let linkBusy = false;
   resetSimulationTimeToNow = (): void => {
+    resetSimulationTimeToEpoch(new Date().toISOString());
+  };
+  resetSimulationTimeToEpoch = (epochUtc: string): void => {
     simBaseSec = 0;
     realBaseMs = performance.now();
     state.simTimeSec = 0;
     propBusy = false;
     const resetReq: PropagatorRequest = {
       type: 'RESET_EPOCH',
-      epochUtc: new Date().toISOString()
+      epochUtc
     };
     propagator.postMessage(resetReq);
+    updateDebug({ simTimeSec: 0 });
   };
 
   propagator.onmessage = (event: MessageEvent<PropagatorResponse>) => {
@@ -162,6 +240,10 @@ export async function startApp(): Promise<void> {
       lastPositions = msg.positions;
       lastVelocities = msg.velocities;
       lastSatCount = msg.satCount;
+      if (gpuMatcherEnabled && gpuMatcher) {
+        gpuMatcher.updateState(msg.positions, msg.velocities, msg.satCount);
+      }
+      updateDebug({ simTimeSec: msg.simTimeSec });
 
       renderer.setSatelliteState(msg.positions, msg.velocities, msg.satCount);
 
@@ -189,12 +271,75 @@ export async function startApp(): Promise<void> {
 
     if (msg.type === 'LINKS') {
       linkBusy = false;
+      state.matcherMode = 'cpu';
       state.linkCount = msg.matchedCount;
       state.candidateCount = msg.candidateCount;
       state.matchingMs = msg.computeMs;
+      state.scoreMs = undefined;
+      state.matchMs = undefined;
+      state.gpuRounds = undefined;
       lastConnectedSatPairs = msg.connectedSatPairs;
       lastConnectedLts = msg.connectedLts;
       renderer.setLinks(msg.connectedSatPairs, msg.connectedLts);
+      updateDebug({
+        matcherMode: state.matcherMode,
+        linkCount: state.linkCount,
+        candidateCount: state.candidateCount,
+        matchingMs: state.matchingMs,
+        scoreMs: state.scoreMs,
+        matchMs: state.matchMs,
+        fallbackCount: state.matcherFallbackCount,
+        connectedSatPairs: msg.connectedSatPairs,
+        connectedLts: msg.connectedLts
+      });
+      return;
+    }
+
+    if (msg.type === 'CANDIDATES') {
+      const runGpuMatch = async (): Promise<void> => {
+        if (!gpuMatcherEnabled || !gpuMatcher) {
+          linkBusy = false;
+          return;
+        }
+        try {
+          const result = await gpuMatcher.match(msg.candidatePairs, DEFAULT_LINK_CONFIG);
+          sanityCheckMatchResult(result.connectedSatPairs, result.connectedLts, lastSatCount);
+          state.matcherMode = 'gpu';
+          state.candidateCount = result.candidateCount;
+          state.linkCount = result.matchedCount;
+          state.matchingMs = msg.computeMs + result.scoreMs + result.matchMs;
+          state.scoreMs = result.scoreMs;
+          state.matchMs = result.matchMs;
+          state.gpuRounds = result.rounds;
+          lastConnectedSatPairs = result.connectedSatPairs;
+          lastConnectedLts = result.connectedLts;
+          renderer.setLinks(result.connectedSatPairs, result.connectedLts);
+          updateDebug({
+            matcherMode: state.matcherMode,
+            linkCount: state.linkCount,
+            candidateCount: state.candidateCount,
+            matchingMs: state.matchingMs,
+            scoreMs: state.scoreMs,
+            matchMs: state.matchMs,
+            fallbackCount: state.matcherFallbackCount,
+            connectedSatPairs: result.connectedSatPairs,
+            connectedLts: result.connectedLts
+          });
+        } catch (err) {
+          gpuMatcherEnabled = false;
+          gpuMatcher = null;
+          state.matcherMode = 'cpu';
+          state.matcherFallbackCount += 1;
+          state.warning = `GPU matcher failed (${err instanceof Error ? err.message : String(err)}); using CPU matcher fallback.`;
+          updateDebug({
+            matcherMode: state.matcherMode,
+            fallbackCount: state.matcherFallbackCount
+          });
+        } finally {
+          linkBusy = false;
+        }
+      };
+      void runGpuMatch();
     }
   };
 
@@ -237,7 +382,8 @@ export async function startApp(): Promise<void> {
       return;
     }
     linkBusy = true;
-    const req: LinkWorkerRequest = { type: 'BUILD_LINKS' };
+    const req: LinkWorkerRequest =
+      gpuMatcherEnabled && gpuMatcher ? { type: 'BUILD_CANDIDATES' } : { type: 'BUILD_LINKS' };
     linker.postMessage(req);
   }, linkIntervalMs);
 
@@ -258,6 +404,7 @@ export async function startApp(): Promise<void> {
 function toOverlay(mode: RuntimeMode, state: RuntimeState, timeScale: number): OverlayMetrics {
   return {
     mode,
+    matcherMode: state.matcherMode,
     timeScale,
     satCount: state.satCount,
     linkCount: state.linkCount,
@@ -265,8 +412,30 @@ function toOverlay(mode: RuntimeMode, state: RuntimeState, timeScale: number): O
     simTimeSec: state.simTimeSec,
     propagationMs: state.propagationMs,
     matchingMs: state.matchingMs,
+    scoreMs: state.scoreMs,
+    matchMs: state.matchMs,
+    gpuRounds: state.gpuRounds,
+    fallbackCount: state.matcherFallbackCount,
     renderMs: state.renderMs,
     tleUpdatedUtc: state.tleUpdatedUtc,
     warning: state.warning
   };
+}
+
+function sanityCheckMatchResult(
+  connectedSatPairs: Uint32Array<ArrayBufferLike>,
+  connectedLts: Uint32Array<ArrayBufferLike>,
+  satCount: number
+): void {
+  if (connectedSatPairs.length !== connectedLts.length || connectedSatPairs.length % 2 !== 0) {
+    throw new Error('GPU matcher output shape mismatch');
+  }
+  for (let i = 0; i < connectedSatPairs.length; i += 1) {
+    if (connectedSatPairs[i] >= satCount) {
+      throw new Error('GPU matcher output satellite index out of range');
+    }
+    if ((connectedLts[i] % 4) > 3) {
+      throw new Error('GPU matcher output terminal index invalid');
+    }
+  }
 }

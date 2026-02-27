@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "update:tle": "node scripts/update-tle.mjs"
+    "update:tle": "node scripts/update-tle.mjs",
+    "bench:gpu:headed": "node scripts/pw-gpu-match-benchmark-headed.mjs http://127.0.0.1:4173/"
   },
   "dependencies": {
     "pako": "^2.1.0",

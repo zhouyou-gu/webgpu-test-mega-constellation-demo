@@ -42,9 +42,17 @@ export type LinkWorkerRequest =
       satCount: number;
       simTimeSec: number;
     }
+  | { type: 'BUILD_CANDIDATES' }
   | { type: 'BUILD_LINKS' };
 
 export type LinkWorkerResponse =
+  | {
+      type: 'CANDIDATES';
+      candidatePairs: Uint32Array<ArrayBufferLike>;
+      candidateCount: number;
+      simTimeSec: number;
+      computeMs: number;
+    }
   | {
       type: 'LINKS';
       connectedLts: Uint32Array<ArrayBufferLike>;
@@ -58,6 +66,7 @@ export type LinkWorkerResponse =
 
 export interface OverlayMetrics {
   mode: RuntimeMode;
+  matcherMode: RuntimeMode;
   timeScale: number;
   satCount: number;
   linkCount: number;
@@ -65,6 +74,10 @@ export interface OverlayMetrics {
   simTimeSec: number;
   propagationMs: number;
   matchingMs: number;
+  scoreMs?: number;
+  matchMs?: number;
+  gpuRounds?: number;
+  fallbackCount?: number;
   renderMs: number;
   tleUpdatedUtc?: string;
   warning?: string;

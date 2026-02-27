@@ -326,6 +326,32 @@ function buildLinks(): LinkWorkerResponse {
   };
 }
 
+function buildCandidateResponse(): LinkWorkerResponse {
+  const start = performance.now();
+  if (satCount === 0) {
+    return {
+      type: 'CANDIDATES',
+      candidatePairs: new Uint32Array(0),
+      candidateCount: 0,
+      simTimeSec,
+      computeMs: 0
+    };
+  }
+  const candidates = buildCandidates(config.maxDistanceKm);
+  const packed = new Uint32Array(candidates.length * 2);
+  for (let i = 0; i < candidates.length; i += 1) {
+    packed[i * 2 + 0] = candidates[i][0];
+    packed[i * 2 + 1] = candidates[i][1];
+  }
+  return {
+    type: 'CANDIDATES',
+    candidatePairs: packed,
+    candidateCount: candidates.length,
+    simTimeSec,
+    computeMs: performance.now() - start
+  };
+}
+
 self.onmessage = (event: MessageEvent<LinkWorkerRequest>) => {
   const msg = event.data;
 
@@ -352,6 +378,15 @@ self.onmessage = (event: MessageEvent<LinkWorkerRequest>) => {
           res.connectedLts.buffer as ArrayBuffer,
           res.connectedSatPairs.buffer as ArrayBuffer
         ]);
+      } else {
+        self.postMessage(res);
+      }
+      return;
+    }
+    if (msg.type === 'BUILD_CANDIDATES') {
+      const res = buildCandidateResponse();
+      if (res.type === 'CANDIDATES') {
+        self.postMessage(res, [res.candidatePairs.buffer as ArrayBuffer]);
       } else {
         self.postMessage(res);
       }
