@@ -34,7 +34,7 @@ export class StatusOverlay {
           <div class="hud-title-sub">Auth.: Z. Gu, Supr.: J. Park, Aff.: SUTD</div>
         </header>
 
-        <details class="hud-section hud-single" open>
+        <details class="hud-section hud-single">
           <summary>Status Panel</summary>
           <pre class="hud-pre" data-pane="status-all"></pre>
         </details>
@@ -115,6 +115,7 @@ export class StatusOverlay {
       '',
       'STATUS:',
       `Mode: ${metrics.mode.toUpperCase()}`,
+      `Matcher: ${metrics.matcherMode.toUpperCase()}`,
       `AVG: ${this.avgFrameSec.toFixed(4)} s`,
       `UPD: ${this.frameCount}`,
       `TOT: ${elapsedSec.toFixed(2)} s`,
@@ -126,6 +127,10 @@ export class StatusOverlay {
       'TIME PROFILE:',
       `satellite_positions: ${(metrics.propagationMs / 1000).toFixed(4)} s`,
       `greedy_matching: ${(metrics.matchingMs / 1000).toFixed(4)} s`,
+      metrics.scoreMs !== undefined ? `gpu_score: ${(metrics.scoreMs / 1000).toFixed(4)} s` : '',
+      metrics.matchMs !== undefined ? `gpu_match: ${(metrics.matchMs / 1000).toFixed(4)} s` : '',
+      metrics.gpuRounds !== undefined ? `gpu_rounds: ${metrics.gpuRounds}` : '',
+      metrics.fallbackCount !== undefined ? `matcher_fallbacks: ${metrics.fallbackCount}` : '',
       `draw_matching: ${(metrics.renderMs / 1000).toFixed(4)} s`,
       '',
       'INTERACTION:',
