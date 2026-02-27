@@ -16,6 +16,8 @@ export class StatusOverlay {
   private readonly speedValueEl: HTMLElement;
   private readonly onTimeScaleChange?: (timeScale: number) => void;
   private readonly onResetSimulationTime?: () => void;
+  private statusUserControlled = false;
+  private statusForceFrames = 0;
   private frameCount = 0;
   private startedAtMs = performance.now();
   private simEpochMs = Date.now();
@@ -35,7 +37,7 @@ export class StatusOverlay {
           <div class="hud-title-sub">Auth.: Z. Gu, Supr.: J. Park, Aff.: SUTD</div>
         </header>
 
-        <details class="hud-section hud-single">
+        <details class="hud-section hud-single" open>
           <summary>Status Panel</summary>
           <pre class="hud-pre" data-pane="status-all"></pre>
         </details>
@@ -64,8 +66,10 @@ export class StatusOverlay {
     this.panelPre = this.mustQuery('[data-pane="status-all"]');
     this.warningEl = this.mustQuery('.hud-warning');
     this.statusSection = this.mustQueryDetails('.hud-section');
-    // Force deterministic initial UI state even if the browser restores details state.
-    this.statusSection.open = false;
+    const summaryEl = this.mustQuery('.hud-section > summary');
+    summaryEl.addEventListener('click', () => {
+      this.statusUserControlled = true;
+    });
     this.speedSlider = this.mustQuery('#time-speed-slider') as HTMLInputElement;
     this.speedValueEl = this.mustQuery('[data-pane="speed-value"]');
     const resetBtn = this.mustQuery('.hud-reset-btn');
@@ -90,6 +94,13 @@ export class StatusOverlay {
   }
 
   render(metrics: OverlayMetrics): void {
+    // Some browsers restore <details> state and override the HTML open attribute.
+    // Force intended default briefly unless user explicitly toggles it.
+    if (!this.statusUserControlled && this.statusForceFrames < 120) {
+      this.statusSection.open = !window.matchMedia('(max-width: 640px)').matches;
+      this.statusForceFrames += 1;
+    }
+
     const now = performance.now();
     if (this.lastFrameMs > 0) {
       const dtSec = (now - this.lastFrameMs) / 1000;

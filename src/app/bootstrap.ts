@@ -31,6 +31,8 @@ interface RuntimeState {
   warning?: string;
 }
 
+const MAX_GPU_MATCH_CANDIDATES = 1_800_000;
+
 declare global {
   interface Window {
     __mcDebug?: {
@@ -176,6 +178,14 @@ export async function startApp(): Promise<void> {
     gpuMatcher = WebGpuLinkMatcher.create(device);
     device.addEventListener('uncapturederror', (event) => {
       const detail = event.error instanceof Error ? event.error.message : 'unknown validation/runtime error';
+      if (gpuMatcherEnabled) {
+        gpuMatcherEnabled = false;
+        gpuMatcher = null;
+        state.matcherMode = 'cpu';
+        state.matcherFallbackCount += 1;
+        state.warning = `WebGPU matcher error (${detail}); CPU matcher fallback enabled.`;
+        return;
+      }
       switchToCpu(`WebGPU runtime error (${detail}); switched to CPU fallback.`);
     });
     void device.lost.then(() => {
@@ -298,6 +308,15 @@ export async function startApp(): Promise<void> {
     if (msg.type === 'CANDIDATES') {
       const runGpuMatch = async (): Promise<void> => {
         if (!gpuMatcherEnabled || !gpuMatcher) {
+          linkBusy = false;
+          return;
+        }
+        if (msg.candidateCount > MAX_GPU_MATCH_CANDIDATES) {
+          gpuMatcherEnabled = false;
+          gpuMatcher = null;
+          state.matcherMode = 'cpu';
+          state.matcherFallbackCount += 1;
+          state.warning = `GPU matcher disabled: candidate count ${msg.candidateCount} exceeds safe threshold ${MAX_GPU_MATCH_CANDIDATES}.`;
           linkBusy = false;
           return;
         }
