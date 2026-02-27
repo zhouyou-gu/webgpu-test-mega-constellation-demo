@@ -82,6 +82,20 @@ export function mat4Perspective(fovYRad: number, aspect: number, near: number, f
   return out;
 }
 
+// WebGPU clip-space depth is [0, 1], unlike OpenGL's [-1, 1].
+export function mat4PerspectiveWebGpu(fovYRad: number, aspect: number, near: number, far: number): Mat4 {
+  const f = 1.0 / Math.tan(fovYRad / 2);
+  const nf = 1 / (near - far);
+
+  const out = new Float32Array(16);
+  out[0] = f / aspect;
+  out[5] = f;
+  out[10] = far * nf;
+  out[11] = -1;
+  out[14] = far * near * nf;
+  return out;
+}
+
 function normalize(v: Vec3): Vec3 {
   const n = Math.hypot(v[0], v[1], v[2]) || 1;
   return [v[0] / n, v[1] / n, v[2] / n];

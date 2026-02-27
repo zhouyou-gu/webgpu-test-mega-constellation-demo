@@ -87,13 +87,12 @@ export async function startApp(): Promise<void> {
 
   const mode: RuntimeMode = renderer.mode;
   let effectiveMode: RuntimeMode = mode;
-  let renderFrameInProgress = false;
-  let gpuMatcherEnabled = mode === 'gpu';
+  let gpuMatcherEnabled = false;
   const matcherParam = new URLSearchParams(window.location.search).get('matcher');
   if (matcherParam === 'cpu') {
     gpuMatcherEnabled = false;
   }
-  if (matcherParam === 'gpu') {
+  if (matcherParam === 'gpu' && mode === 'gpu') {
     gpuMatcherEnabled = mode === 'gpu';
   }
   let gpuMatcher: WebGpuLinkMatcher | null = null;
@@ -178,19 +177,14 @@ export async function startApp(): Promise<void> {
     gpuMatcher = WebGpuLinkMatcher.create(device);
     device.addEventListener('uncapturederror', (event) => {
       const detail = event.error instanceof Error ? event.error.message : 'unknown validation/runtime error';
-      if (renderFrameInProgress) {
-        switchToCpu(`WebGPU runtime error (${detail}); switched to CPU fallback.`);
-        return;
-      }
       if (gpuMatcherEnabled) {
         gpuMatcherEnabled = false;
         gpuMatcher = null;
         state.matcherMode = 'cpu';
         state.matcherFallbackCount += 1;
-        // Non-fatal path: keep rendering active and track fallback in status panel.
-        return;
       }
-      switchToCpu(`WebGPU runtime error (${detail}); switched to CPU fallback.`);
+      // Render-path faults are handled by renderFrame try/catch and device.lost.
+      // Avoid switching full renderer here for non-fatal uncaptured warnings.
     });
     void device.lost.then(() => {
       switchToCpu('WebGPU device lost; switched to CPU fallback.');
@@ -410,13 +404,10 @@ export async function startApp(): Promise<void> {
 
   const frame = (): void => {
     try {
-      renderFrameInProgress = true;
       state.renderMs = renderer.renderFrame(state.simTimeSec);
     } catch (err) {
       switchToCpu(`WebGPU render failure (${err instanceof Error ? err.message : String(err)}); switched to CPU fallback.`);
       state.renderMs = renderer.renderFrame(state.simTimeSec);
-    } finally {
-      renderFrameInProgress = false;
     }
     overlay.render(toOverlay(effectiveMode, state, timeScale));
     requestAnimationFrame(frame);

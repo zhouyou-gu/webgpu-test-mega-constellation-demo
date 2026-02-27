@@ -1,6 +1,6 @@
 import { EARTH_RADIUS_KM, SIMULATION_CONFIG } from '../app/config';
 import type { ConstellationRenderer } from '../app/types';
-import { mat4LookAt, mat4Multiply, mat4Perspective } from '../math/mat4';
+import { mat4LookAt, mat4Multiply, mat4PerspectiveWebGpu } from '../math/mat4';
 
 function createSphereVertices(rows = 24, cols = 48): Float32Array {
   const vertices: number[] = [];
@@ -737,7 +737,7 @@ export class WebGpuRenderer implements ConstellationRenderer {
     this.resize();
 
     const aspect = this.canvas.width / Math.max(1, this.canvas.height);
-    const proj = mat4Perspective((45 * Math.PI) / 180, aspect, 0.1, 100);
+    const proj = mat4PerspectiveWebGpu((45 * Math.PI) / 180, aspect, 0.1, 100);
 
     // Keep the world frame right-handed with Z-up to match source model space.
     const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw);

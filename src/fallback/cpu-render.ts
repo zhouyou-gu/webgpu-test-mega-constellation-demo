@@ -109,19 +109,13 @@ export class CpuRenderer implements ConstellationRenderer {
       this.ctx.stroke();
     }
 
-    const [cx, cy, , cw] = transformToClip(viewProj, 0, 0, 0);
-    const [ex, ey, , ew] = transformToClip(viewProj, 1, 0, 0);
-    const [ux, uy, , uw] = transformToClip(viewProj, 0, 1, 0);
-    const earthX = (cx / cw * 0.5 + 0.5) * width;
-    const earthY = (1 - (cy / cw * 0.5 + 0.5)) * height;
-    const edgeX = (ex / ew * 0.5 + 0.5) * width;
-    const edgeY = (1 - (ey / ew * 0.5 + 0.5)) * height;
-    const upX = (ux / uw * 0.5 + 0.5) * width;
-    const upY = (1 - (uy / uw * 0.5 + 0.5)) * height;
-    const earthR = Math.max(
-      8,
-      (Math.hypot(edgeX - earthX, edgeY - earthY) + Math.hypot(upX - earthX, upY - earthY)) * 0.5
-    );
+    // For a camera always looking at origin, Earth center remains screen-centered.
+    // Use silhouette projection radius to keep size stable under yaw/pitch rotation.
+    const earthX = width * 0.5;
+    const earthY = height * 0.5;
+    const fPx = height * 0.5 / Math.tan((45 * Math.PI) / 360);
+    const denom = Math.max(1e-4, Math.sqrt(Math.max(1e-4, this.distance * this.distance - 1)));
+    const earthR = Math.max(8, fPx / denom);
 
     const isEarthOccluded = (wx: number, wy: number, wz: number, sx: number, sy: number): boolean => {
       // Hide far-side primitives that project inside the Earth disk.
@@ -136,7 +130,8 @@ export class CpuRenderer implements ConstellationRenderer {
     if (this.earthTextureLoaded && this.earthTexture) {
       this.ctx.save();
       this.ctx.translate(earthX, earthY);
-      this.ctx.rotate(-earthSpin);
+      // Approximate inertial Earth rotation plus camera yaw compensation in CPU fallback mode.
+      this.ctx.rotate(-(earthSpin + this.yaw));
       this.ctx.beginPath();
       this.ctx.arc(0, 0, earthR, 0, Math.PI * 2);
       this.ctx.clip();
