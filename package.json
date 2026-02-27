@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "update:tle": "node scripts/update-tle.mjs",
-    "bench:gpu:headed": "node scripts/pw-gpu-match-benchmark-headed.mjs http://127.0.0.1:4173/"
+    "bench:gpu:headed": "node scripts/pw-gpu-match-benchmark-headed.mjs http://127.0.0.1:4173/",
+    "generate:social-preview": "node scripts/generate-social-preview.mjs http://127.0.0.1:4173/ public/social-preview.png"
   },
   "dependencies": {
     "pako": "^2.1.0",

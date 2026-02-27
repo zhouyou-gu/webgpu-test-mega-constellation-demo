@@ -15,6 +15,7 @@ export class CpuRenderer implements ConstellationRenderer {
   private linkLts: Uint32Array<ArrayBufferLike> = new Uint32Array();
   private earthTexture: HTMLImageElement | null = null;
   private earthTextureLoaded = false;
+  private earthOffsetBase = 0;
 
   private yaw = 0;
   private pitch = Math.PI * 0.25;
@@ -33,6 +34,7 @@ export class CpuRenderer implements ConstellationRenderer {
       throw new Error('2D canvas context unavailable');
     }
     this.ctx = ctx;
+    this.earthOffsetBase = this.computeSiderealOffsetSeconds(Date.now() / 1000);
     this.earthTexture = new Image();
     this.earthTexture.src = './population_density_texture.png';
     this.earthTexture.onload = () => {
@@ -79,7 +81,7 @@ export class CpuRenderer implements ConstellationRenderer {
     const aspect = width / Math.max(1, height);
     const proj = mat4Perspective((45 * Math.PI) / 180, aspect, 0.1, 100);
 
-    const earthSpin = simTimeSec * ((2 * Math.PI) / 86164);
+    const earthSpin = (this.earthOffsetBase + simTimeSec * (1 / 86164)) * (2 * Math.PI);
     // Keep the world frame right-handed with Z-up to match source model space.
     const eyeX = this.distance * Math.cos(this.pitch) * Math.sin(this.yaw);
     const eyeY = this.distance * Math.cos(this.pitch) * Math.cos(this.yaw);
@@ -107,14 +109,34 @@ export class CpuRenderer implements ConstellationRenderer {
       this.ctx.stroke();
     }
 
-    const earthR = Math.min(width, height) * 0.3;
-    const earthX = width * 0.5;
-    const earthY = height * 0.5;
+    const [cx, cy, , cw] = transformToClip(viewProj, 0, 0, 0);
+    const [ex, ey, , ew] = transformToClip(viewProj, 1, 0, 0);
+    const [ux, uy, , uw] = transformToClip(viewProj, 0, 1, 0);
+    const earthX = (cx / cw * 0.5 + 0.5) * width;
+    const earthY = (1 - (cy / cw * 0.5 + 0.5)) * height;
+    const edgeX = (ex / ew * 0.5 + 0.5) * width;
+    const edgeY = (1 - (ey / ew * 0.5 + 0.5)) * height;
+    const upX = (ux / uw * 0.5 + 0.5) * width;
+    const upY = (1 - (uy / uw * 0.5 + 0.5)) * height;
+    const earthR = Math.max(
+      8,
+      (Math.hypot(edgeX - earthX, edgeY - earthY) + Math.hypot(upX - earthX, upY - earthY)) * 0.5
+    );
+
+    const isEarthOccluded = (wx: number, wy: number, wz: number, sx: number, sy: number): boolean => {
+      // Hide far-side primitives that project inside the Earth disk.
+      if (wx * eyeX + wy * eyeY + wz * eyeZ >= 0) {
+        return false;
+      }
+      const dx2 = sx - earthX;
+      const dy2 = sy - earthY;
+      return dx2 * dx2 + dy2 * dy2 <= earthR * earthR;
+    };
 
     if (this.earthTextureLoaded && this.earthTexture) {
       this.ctx.save();
       this.ctx.translate(earthX, earthY);
-      this.ctx.rotate(earthSpin * 3.5);
+      this.ctx.rotate(-earthSpin);
       this.ctx.beginPath();
       this.ctx.arc(0, 0, earthR, 0, Math.PI * 2);
       this.ctx.clip();
@@ -178,22 +200,35 @@ export class CpuRenderer implements ConstellationRenderer {
       const bny = 1 - ((by / bw) * 0.5 + 0.5);
       const mnx = (mx / mw) * 0.5 + 0.5;
       const mny = 1 - ((my / mw) * 0.5 + 0.5);
+      const axs = anx * width;
+      const ays = any * height;
+      const bxs = bnx * width;
+      const bys = bny * height;
+      const mxs = mnx * width;
+      const mys = mny * height;
+      const hideA = isEarthOccluded(axw, ayw, azw, axs, ays);
+      const hideB = isEarthOccluded(bxw, byw, bzw, bxs, bys);
+      const hideM = isEarthOccluded(mxw, myw, mzw, mxs, mys);
       const cFrom = ltColor(this.linkLts[i * 2 + 0] ?? 0);
       const cTo = ltColor(this.linkLts[i * 2 + 1] ?? 0);
 
-      this.ctx.strokeStyle = cFrom;
-      this.ctx.lineWidth = linkWidth;
-      this.ctx.beginPath();
-      this.ctx.moveTo(anx * width, any * height);
-      this.ctx.lineTo(mnx * width, mny * height);
-      this.ctx.stroke();
+      if (!(hideA && hideM)) {
+        this.ctx.strokeStyle = cFrom;
+        this.ctx.lineWidth = linkWidth;
+        this.ctx.beginPath();
+        this.ctx.moveTo(axs, ays);
+        this.ctx.lineTo(mxs, mys);
+        this.ctx.stroke();
+      }
 
-      this.ctx.strokeStyle = cTo;
-      this.ctx.lineWidth = linkWidth;
-      this.ctx.beginPath();
-      this.ctx.moveTo(mnx * width, mny * height);
-      this.ctx.lineTo(bnx * width, bny * height);
-      this.ctx.stroke();
+      if (!(hideB && hideM)) {
+        this.ctx.strokeStyle = cTo;
+        this.ctx.lineWidth = linkWidth;
+        this.ctx.beginPath();
+        this.ctx.moveTo(mxs, mys);
+        this.ctx.lineTo(bxs, bys);
+        this.ctx.stroke();
+      }
     }
 
     this.ctx.fillStyle = '#000000';
@@ -216,6 +251,9 @@ export class CpuRenderer implements ConstellationRenderer {
       }
       const sx = (nx * 0.5 + 0.5) * width;
       const sy = (1 - (ny * 0.5 + 0.5)) * height;
+      if (isEarthOccluded(this.satPositionsNorm[p + 0], this.satPositionsNorm[p + 1], this.satPositionsNorm[p + 2], sx, sy)) {
+        continue;
+      }
       this.ctx.fillRect(sx, sy, 1.5, 1.5);
 
       // Draw four laser terminal directions (front/back/right/left) in close zoom only.
@@ -374,6 +412,14 @@ export class CpuRenderer implements ConstellationRenderer {
     this.yaw = 0;
     this.pitch = Math.PI * 0.25;
     this.distance = SIMULATION_CONFIG.cameraDistance;
+  }
+
+  private computeSiderealOffsetSeconds(unixSeconds: number): number {
+    const jd = unixSeconds / 86400 + 2440587.5;
+    const d = jd - 2451545.0;
+    const gmstHours = 18.697374558 + 24.06570982441908 * d;
+    const wrapped = ((gmstHours % 24) + 24) % 24;
+    return wrapped / 24;
   }
 
   private clampDistance(next: number): number {

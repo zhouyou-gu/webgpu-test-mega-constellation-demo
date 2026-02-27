@@ -82,7 +82,6 @@ export async function startApp(): Promise<void> {
     state.matcherMode = 'gpu';
   } else {
     renderer = new CpuRenderer(canvas);
-    state.warning = 'WebGPU unavailable. Running CPU fallback in best-effort mode.';
     state.matcherMode = 'cpu';
   }
 
