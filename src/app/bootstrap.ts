@@ -87,6 +87,7 @@ export async function startApp(): Promise<void> {
 
   const mode: RuntimeMode = renderer.mode;
   let effectiveMode: RuntimeMode = mode;
+  let renderFrameInProgress = false;
   let gpuMatcherEnabled = mode === 'gpu';
   const matcherParam = new URLSearchParams(window.location.search).get('matcher');
   if (matcherParam === 'cpu') {
@@ -177,12 +178,16 @@ export async function startApp(): Promise<void> {
     gpuMatcher = WebGpuLinkMatcher.create(device);
     device.addEventListener('uncapturederror', (event) => {
       const detail = event.error instanceof Error ? event.error.message : 'unknown validation/runtime error';
+      if (renderFrameInProgress) {
+        switchToCpu(`WebGPU runtime error (${detail}); switched to CPU fallback.`);
+        return;
+      }
       if (gpuMatcherEnabled) {
         gpuMatcherEnabled = false;
         gpuMatcher = null;
         state.matcherMode = 'cpu';
         state.matcherFallbackCount += 1;
-        state.warning = `WebGPU matcher error (${detail}); CPU matcher fallback enabled.`;
+        // Non-fatal path: keep rendering active and track fallback in status panel.
         return;
       }
       switchToCpu(`WebGPU runtime error (${detail}); switched to CPU fallback.`);
@@ -315,7 +320,6 @@ export async function startApp(): Promise<void> {
           gpuMatcher = null;
           state.matcherMode = 'cpu';
           state.matcherFallbackCount += 1;
-          state.warning = `GPU matcher disabled: candidate count ${msg.candidateCount} exceeds safe threshold ${MAX_GPU_MATCH_CANDIDATES}.`;
           linkBusy = false;
           return;
         }
@@ -348,7 +352,6 @@ export async function startApp(): Promise<void> {
           gpuMatcher = null;
           state.matcherMode = 'cpu';
           state.matcherFallbackCount += 1;
-          state.warning = `GPU matcher failed (${err instanceof Error ? err.message : String(err)}); using CPU matcher fallback.`;
           updateDebug({
             matcherMode: state.matcherMode,
             fallbackCount: state.matcherFallbackCount
@@ -407,10 +410,13 @@ export async function startApp(): Promise<void> {
 
   const frame = (): void => {
     try {
+      renderFrameInProgress = true;
       state.renderMs = renderer.renderFrame(state.simTimeSec);
     } catch (err) {
       switchToCpu(`WebGPU render failure (${err instanceof Error ? err.message : String(err)}); switched to CPU fallback.`);
       state.renderMs = renderer.renderFrame(state.simTimeSec);
+    } finally {
+      renderFrameInProgress = false;
     }
     overlay.render(toOverlay(effectiveMode, state, timeScale));
     requestAnimationFrame(frame);
