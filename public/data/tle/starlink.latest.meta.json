@@ -1,9 +1,9 @@
 {
   "source": "celestrak",
   "group": "starlink",
-  "fetched_at_utc": "2026-07-15T05:09:02.525Z",
-  "sat_count": 10786,
-  "tle_lines": 32358,
-  "sha256_gz": "95b11dcbd263fc3bd50fd55fd74ab3f13120d69aced63c276d2a232c7ced9533",
+  "fetched_at_utc": "2026-07-16T05:18:52.484Z",
+  "sat_count": 10785,
+  "tle_lines": 32355,
+  "sha256_gz": "e28954f5a2d828b5e562b307f035d48b2d4200c04028d7434efc93b28899f80e",
   "schema_version": 1
 }
